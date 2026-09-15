@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <RootNamespace>GeometryEngine.Tests</RootNamespace>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../src/GeometryEngine.Core/GeometryEngine.Core.csproj" />
+    <ProjectReference Include="../../src/GeometryEngine/GeometryEngine.csproj" />
+    <ProjectReference Include="../GeometryEngine.Testing/GeometryEngine.Testing.csproj" />
+  </ItemGroup>
+</Project>

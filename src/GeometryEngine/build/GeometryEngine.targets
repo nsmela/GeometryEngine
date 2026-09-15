@@ -1,0 +1,26 @@
+<!--
+  Imported into any project that references the GeometryEngine package.
+
+  It carries the licences, and only the licences.
+
+  The native binaries need nothing from here. They ship in the conventional
+  runtimes/win-x64/native/ layout, the SDK copies that layout into the consumer's output on
+  its own, and ManifoldNative's resolver probes it - so the native kernel engages without
+  help. Copying them flat as well was tried and reverted: it worked, but it put a second
+  3.2 MB copy of manifold.dll in every consumer's output for no benefit.
+
+  The licences are the genuine gap. Package folders outside lib/ and runtimes/ are not
+  copied anywhere, so without this the texts would sit in the NuGet cache and reach nobody.
+  That matters because whoever builds on this library redistributes Manifold, oneTBB and ITT
+  Notify inside their own output: Apache-2.0 clause 4(a) and BSD-3-Clause clause 2 bind them
+  in their own right, and they can only discharge that if the texts are actually present to
+  pass on.
+-->
+<Project>
+  <ItemGroup>
+    <None Include="$(MSBuildThisFileDirectory)../licenses/*.txt"
+          Link="%(FileName)%(Extension)"
+          CopyToOutputDirectory="PreserveNewest"
+          Visible="false" />
+  </ItemGroup>
+</Project>

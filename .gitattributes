@@ -1,0 +1,3 @@
+# STL meshes are data: never apply end-of-line conversion (it would corrupt the
+# binary files) and do not try to diff them.
+*.stl binary

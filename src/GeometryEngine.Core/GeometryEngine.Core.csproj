@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <RootNamespace>GeometryEngine.Core</RootNamespace>
+    <!--
+      Core ships inside the GeometryEngine package rather than as one of its own - see
+      GeometryEngine.csproj. Without this, `dotnet pack` over the solution would also emit a
+      GeometryEngine.Core package that duplicates assemblies already in GeometryEngine and that nothing
+      references.
+    -->
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+</Project>

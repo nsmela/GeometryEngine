@@ -1,0 +1,107 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <RootNamespace>GeometryEngine</RootNamespace>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+  </PropertyGroup>
+
+  <!--
+    One package, one reference. A consumer adds GeometryEngine and gets the whole library: both
+    managed assemblies, the native kernel, and every licence that has to travel with it.
+
+    GeometryEngine.Core is folded into this package rather than published beside it. Splitting them
+    would mean two packages to version, publish and keep in step for a boundary that is
+    internal to this repository - a consumer has no use for Core without Engine.
+  -->
+  <PropertyGroup>
+    <PackageId>GeometryEngine</PackageId>
+    <Version>0.1.0</Version>
+    <Authors>NathanSmela</Authors>
+    <Description>
+      Boolean mesh operations - union, subtraction, intersection - over triangle meshes,
+      backed by the native Manifold kernel with a pure-managed BSP fallback. Every failure
+      is a value rather than an exception, and every result records which kernel produced it.
+      Native binaries ship for win-x64 only; elsewhere the managed kernel takes over, which
+      does not guarantee watertight output.
+    </Description>
+    <RepositoryUrl>https://github.com/nsmela/MeshCSG</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageTags>mesh;csg;boolean;geometry;stl;manifold;3d-printing</PackageTags>
+
+    <!--
+      NO LICENCE IS DECLARED, deliberately and visibly. GeometryEngine has no LICENCE file and the
+      README states no terms, so there is nothing to declare that would be true. A package is
+      a distribution to other people, and shipping one with an invented licence field is worse
+      than shipping one with an empty one. Choose the project's licence, add the file, then set
+      PackageLicenseExpression here - until then this package is for local and internal
+      consumption only. The third-party licences below are unaffected: those are established.
+    -->
+
+    <!--
+      Core's assembly is placed in this package's lib/ folder by the target below. PrivateAssets
+      on the reference stops it also being declared as a package dependency, which would send
+      consumers looking for a GeometryEngine.Core package that is never published.
+    -->
+    <TargetsForTfmSpecificBuildOutput>$(TargetsForTfmSpecificBuildOutput);IncludeCoreAssemblyInPackage</TargetsForTfmSpecificBuildOutput>
+  </PropertyGroup>
+
+  <ItemGroup><ProjectReference Include="../GeometryEngine.Core/GeometryEngine.Core.csproj" PrivateAssets="all" /></ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="GeometryEngine.Tests" />
+    <InternalsVisibleTo Include="GeometryEngine.Benchmarks" />
+  </ItemGroup>
+
+  <!--
+    DependsOnTargets is load-bearing: ReferenceCopyLocalPaths is empty until ResolveReferences
+    has run, and pack calls this target directly. Without it the target succeeds, contributes
+    nothing, and the package quietly ships without Core - which fails at the consumer's first
+    use of any type in it, not here.
+  -->
+  <Target Name="IncludeCoreAssemblyInPackage" DependsOnTargets="ResolveReferences">
+    <ItemGroup>
+      <BuildOutputInPackage Include="@(ReferenceCopyLocalPaths->WithMetadataValue('ReferenceSourceTarget', 'ProjectReference')->WithMetadataValue('Extension', '.dll'))" />
+    </ItemGroup>
+  </Target>
+
+  <ItemGroup>
+    <!--
+      Copied flat, beside the assembly, which is where the DllImport resolver looks first.
+      Declared once: a second glob over runtimes\** would match the same files again and
+      copy 3.2 MB of binaries twice into every output directory.
+
+      Pack puts them in the conventional runtimes/<rid>/native layout instead, which is all a
+      package consumer needs: the SDK copies that layout into their output and the resolver
+      probes it. Verified by consuming the package from a clean project - the result's
+      CreatedBy reads GeometryEngine.Booleans.Manifold, not the BSP fallback.
+    -->
+    <None Include="runtimes\win-x64\native\*.dll" Link="%(FileName)%(Extension)" CopyToOutputDirectory="PreserveNewest" Visible="false"
+          Pack="true" PackagePath="runtimes/win-x64/native/" />
+    <!--
+      Manifold is Apache-2.0, and clause 4(a) requires that recipients of the binaries get a
+      copy of the licence. Copying it beside them is what makes that true of anything built
+      on this library, not just of this repository.
+    -->
+    <None Include="runtimes\LICENSE.manifold.txt" Link="LICENSE.manifold.txt" CopyToOutputDirectory="PreserveNewest" Visible="false"
+          Pack="true" PackagePath="licenses/" />
+    <!--
+      oneTBB is linked statically into manifold.dll, so it ships inside a file that carries no
+      hint of it. That makes it redistributed all the same, and clause 4(a) applies to it in
+      its own right - hence a second licence beside the first rather than a note in a document
+      nobody receives with the binaries.
+    -->
+    <None Include="runtimes\LICENSE.oneTBB.txt" Link="LICENSE.oneTBB.txt" CopyToOutputDirectory="PreserveNewest" Visible="false"
+          Pack="true" PackagePath="licenses/" />
+    <!--
+      oneTBB bundles components under their own terms. ITT Notify is BSD-3-Clause and is
+      genuinely compiled in - 178 __itt_ symbols are present in manifold.dll - and clause 2
+      there obliges a binary redistribution to reproduce its notices "in the documentation
+      and/or other materials provided with the distribution". This is that material. hwloc,
+      gperftools and doctest are listed in the same file but are absent from this build.
+    -->
+    <None Include="runtimes\LICENSE.oneTBB-third-party-programs.txt" Link="LICENSE.oneTBB-third-party-programs.txt" CopyToOutputDirectory="PreserveNewest" Visible="false"
+          Pack="true" PackagePath="licenses/" />
+
+    <!-- Imported by every consuming project; see the file for what it is compensating for. -->
+    <None Include="build\GeometryEngine.targets" Pack="true" PackagePath="build/" Visible="false" />
+  </ItemGroup>
+</Project>

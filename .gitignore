@@ -1,0 +1,25 @@
+# Build output
+[Bb]in/
+[Oo]bj/
+[Oo]ut/
+
+# Visual Studio / Rider / VS Code
+.vs/
+.idea/
+*.user
+*.suo
+
+# Python tooling caches (render tools)
+__pycache__/
+*.pyc
+
+# Redundant duplicate tree and archive (canonical sources live at repo root)
+meshcsg-source/
+meshcsg-source.tar.gz
+
+# OS cruft
+.DS_Store
+Thumbs.db
+
+# BenchmarkDotNet output
+BenchmarkDotNet.Artifacts/

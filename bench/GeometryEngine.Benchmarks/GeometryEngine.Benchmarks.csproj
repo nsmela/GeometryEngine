@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <RootNamespace>GeometryEngine.Benchmarks</RootNamespace>
+    <!-- BenchmarkDotNet's generated harness code is not ours to keep warning-clean. -->
+    <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../src/GeometryEngine.Core/GeometryEngine.Core.csproj" />
+    <ProjectReference Include="../../src/GeometryEngine/GeometryEngine.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="BenchmarkDotNet" Version="0.14.0" />
+  </ItemGroup>
+</Project>
