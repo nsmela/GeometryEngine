@@ -14,6 +14,22 @@ feed because the solution root clears all NuGet sources.
 Record the checksums when replacing these, so a change of binary is visible in review
 rather than being an opaque blob diff.
 
+### geometryengine_native.dll
+
+| file | size | SHA-256 | role |
+|---|---|---|---|
+| `win-x64/native/geometryengine_native.dll` | 258,048 B | `82781c8213e247d3a62eb70d7dea42c78c3acd3992d915a59b673ba757457fd4` | the libigl distance field behind offsets and batched spatial queries |
+
+Built from this repository's own `native/` (see `native/README.md`), not from upstream: libigl
+`v2.5.0` (commit `fdaac01`) and Eigen `3.4.0` (commit `3147391`), header-only, fetched by CMake.
+MSVC 19.44 (Visual Studio 2022 17.14), x64, Release, **static CRT** (`/MT`) — it imports nothing
+but `KERNEL32`, so unlike `manifold.dll` it needs no VC++ redistributable. It resolves
+`manifoldc` by name at runtime rather than linking it. Built 2026-09-15, locally, not by CI.
+
+It is optional: without it `DistanceFieldNative.IsAvailable` is false and offsets and batch
+queries run on the managed BVH, slower but with the same results. Offset results record which
+field produced them in `MeshMetadata.CreatedBy`.
+
 **win-x64 only.** No Linux, macOS, or Windows-on-ARM binaries ship. On those platforms
 `ManifoldNative.IsAvailable` is false and `BspGeometryEngine.Create()` falls back to the
 managed BSP kernel, which does **not** guarantee watertight output. Every result records

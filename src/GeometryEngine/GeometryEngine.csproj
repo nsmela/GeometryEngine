@@ -46,6 +46,17 @@
 
   <ItemGroup><ProjectReference Include="../GeometryEngine.Core/GeometryEngine.Core.csproj" PrivateAssets="all" /></ItemGroup>
 
+  <!--
+    Planar polygon work only: Clipper2 offsets and unions outlines, NetTopologySuite computes
+    concave hulls. Both are what Fabolus used for the same operations before they moved here, so
+    outlines keep the shape they had. Pinned to the versions Fabolus already ships, so a consumer
+    referencing both never has to resolve a downgrade.
+  -->
+  <ItemGroup>
+    <PackageReference Include="Clipper2" Version="1.5.4" />
+    <PackageReference Include="NetTopologySuite" Version="2.6.0" />
+  </ItemGroup>
+
   <ItemGroup>
     <InternalsVisibleTo Include="GeometryEngine.Tests" />
     <InternalsVisibleTo Include="GeometryEngine.Benchmarks" />

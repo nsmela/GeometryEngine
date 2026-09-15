@@ -1,7 +1,6 @@
 # Third-party notices
 
-GeometryEngine's own code has no external dependencies — the solution root clears every NuGet
-source deliberately. Three exceptions are redistributed or consumed, and are recorded here.
+Everything GeometryEngine redistributes, consumes, or ported from is recorded here.
 
 ---
 
@@ -75,6 +74,56 @@ No modifications were made to oneTBB's source.
 
 ---
 
+## libigl and Eigen
+
+**Redistributed as compiled code inside `geometryengine_native.dll`.**
+
+- **Projects:** libigl — https://github.com/libigl/libigl (tag `v2.5.0`); Eigen —
+  https://gitlab.com/libeigen/eigen (tag `3.4.0`)
+- **Licence:** Mozilla Public License 2.0 for both (libigl is also offered under GPL-3.0; MPL-2.0
+  is the one relied on)
+- **Form:** header-only, unmodified, compiled into the native distance-field library built from
+  `native/`
+
+MPL-2.0 clause 3.2 requires that recipients of the executable form be told how to obtain the
+source of the covered files. The source is the upstream repositories at the tags above, which
+`native/CMakeLists.txt` pins (`GE_LIBIGL_TAG`, `GE_EIGEN_TAG`).
+
+---
+
+## Clipper2
+
+**Consumed as a NuGet package; redistributed as `Clipper2Lib.dll` in consumers' output.**
+
+- **Project:** Clipper2 — https://github.com/AngusJohnson/Clipper2 (package `Clipper2` 1.5.4)
+- **Licence:** Boost Software License 1.0
+- **Used for:** planar polygon offsets, path buffering and unions
+
+---
+
+## NetTopologySuite
+
+**Consumed as a NuGet package; redistributed as `NetTopologySuite.dll` in consumers' output.**
+
+- **Project:** NetTopologySuite — https://github.com/NetTopologySuite/NetTopologySuite
+  (package `NetTopologySuite` 2.6.0)
+- **Licence:** BSD 3-Clause (also offered under the Eclipse Distribution License 1.0)
+- **Used for:** concave and convex hulls of a mesh's shadow
+
+---
+
+## geometry3Sharp
+
+**Ported, not redistributed.**
+
+- **Project:** geometry3Sharp — https://github.com/gradientspace/geometry3Sharp
+- **Licence:** Boost Software License 1.0
+- **Ported:** `CurveResampler.SplitCollapseResample` and `InPlaceIterativeCurveSmooth`, into
+  `src/GeometryEngine/Internal/Planar/CurveResampling.cs`, so outlines and painted paths keep the
+  shape they had when Fabolus used the package directly.
+
+---
+
 ## BenchmarkDotNet
 
 **Build-time and development only; not redistributed.**
@@ -83,6 +132,4 @@ No modifications were made to oneTBB's source.
 - **Licence:** MIT
 - **Used by:** `bench/GeometryEngine.Benchmarks` only
 
-The benchmark project is the single sanctioned exception to the zero-dependency rule and
-re-adds `nuget.org` through `bench/NuGet.config`. Nothing under `src/` or `tests/` depends on
-it, and it is not part of any shipped artifact.
+Nothing under `src/` or `tests/` depends on it, and it is not part of any shipped artifact.

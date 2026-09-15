@@ -1,12 +1,37 @@
 # GeometryEngine
 
-A 3D mesh boolean (CSG) library in C#, built to the shape of the `IGeometryEngine`
-interface from [nsmela/Fabolus](https://github.com/nsmela/Fabolus) `v1`.
+A 3D mesh geometry library in C#, built to replace the MeshLib backend of
+[nsmela/Fabolus](https://github.com/nsmela/Fabolus): booleans, offsets, decimation and repair,
+spatial queries, planar polygons, decals, and mesh files. `net8.0`.
 
-Where Fabolus wraps the native MeshLib kernel, this is pure managed code: no
-native dependencies, no NuGet packages, `net8.0` only.
+Booleans run on the native [Manifold](https://github.com/elalish/manifold) kernel, with the
+managed BSP kernel described below as the fallback. Offsets and batched distance queries run on a
+small libigl-backed native library (`native/`), with a managed BVH as the fallback. Native
+binaries ship for win-x64; elsewhere everything still works on the managed paths. Planar work uses
+Clipper2 and NetTopologySuite. See `THIRD-PARTY-NOTICES.md`.
 
-**88 tests, all green. Every boolean result in the showcase is watertight.**
+**192 tests, all green.** Fabolus's own suite (238 tests) passes against it through the thin
+adapter in `Fabolus.Core/Geometry/Engine`.
+
+### Beyond booleans
+
+```
+GeometryEngine
+  Modifiers/             Offset, DoubleOffset (level set over a signed distance field),
+                         Decimate (quadric edge collapse), Repair, RepairSelfIntersections
+  Spatial/               ISpatialIndex: raycast, closest point, signed distance, batches
+  Polygons/              outline and hull of a shadow, offset, buffer, union, extrude, triangulate
+  Decals/                outline prisms laid onto curved surfaces
+  Generators/            + tubes, arcs, path resampling, draped paths
+  Evaluators/            + vertex normals, self-intersection count
+  MeshIO/                STL, OBJ, OFF, PLY, and 3MF packages with a reference mesh and metadata
+  Internal/Spatial/      managed BVH, triangle-triangle test
+  Internal/Planar/       ear clipping with Delaunay flips, curve resampling
+  Internal/Native/       Manifold binding, libigl distance field binding
+native/                  geometryengine_native: libigl distance field (CMake)
+```
+
+The original boolean-kernel write-up follows.
 
 ---
 

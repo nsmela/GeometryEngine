@@ -210,6 +210,20 @@ internal sealed class GeometryGenerators : IGeometryGenerators
     private readonly BoxHandler _box = new();
     private readonly SphereHandler _sphere = new();
     private readonly CylinderHandler _cylinder = new();
+    private readonly TubeHandler _tube = new();
+    private readonly ArcHandler _arc = new();
+    private readonly ResamplePathHandler _resample = new();
+    private readonly DrapedPathHandler _draped = new(new Polygons.BufferPathHandler());
+
+    public Result<IMesh> GenerateTube(TubeSpec spec) => _tube.Handle(new TubeRequest(spec));
+
+    public Result<ImmutableArray<Vec3>> GenerateArc(double bendRadius, Vec3 start, Vec3 startDirection, Vec3 endDirection, int segments) =>
+        _arc.Handle(new ArcRequest(bendRadius, start, startDirection, endDirection, segments));
+
+    public Result<ImmutableArray<Vec3>> ResampleOpenPath(ImmutableArray<Vec3> path, double spacing, int smoothingIterations = 2) =>
+        _resample.Handle(new ResamplePathRequest(path, spacing, smoothingIterations));
+
+    public Result<IMesh> GenerateDrapedPath(DrapedPathSpec spec) => _draped.Handle(new DrapedPathRequest(spec));
 
     public Result<IMesh> GenerateBox(Vec3 min, Vec3 max) => _box.Handle(new BoxRequest(min, max));
 

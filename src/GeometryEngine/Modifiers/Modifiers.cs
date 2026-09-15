@@ -1,0 +1,388 @@
+using System.Runtime.InteropServices;
+using GeometryEngine.Internal;
+using GeometryEngine.Internal.Decimation;
+using GeometryEngine.Internal.Native;
+using GeometryEngine.Internal.Spatial;
+
+namespace GeometryEngine.Modifiers;
+
+/// <summary>Errors the modifier slices report.</summary>
+internal static class ModifierErrors
+{
+    public static readonly Error NonFiniteParameter =
+        new("Modifiers.NonFinite", "The operation's parameters are not finite.");
+
+    public static readonly Error OffsetFailed =
+        new("Modifiers.OffsetFailed", "The offset surface could not be meshed; it may have vanished entirely.");
+
+    public static readonly Error TargetTooSmall =
+        new("Modifiers.TargetTooSmall", "A decimation target needs at least four triangles, the fewest a closed surface can have.");
+}
+
+/// <summary>Ask for the surface lying a fixed distance from a mesh.</summary>
+public sealed record OffsetRequest(IMesh Mesh, double Distance, double CellSize);
+
+/// <summary>
+/// Offsets by sampling a signed distance field over a box around the mesh and meshing its
+/// isosurface with the native kernel's level-set mesher, whose output is a closed solid.
+///
+/// The field comes from the native libigl library where it is present - distance from an AABB
+/// tree, sign from the fast winding number, the whole offset behind one call - and from the
+/// managed BVH otherwise. The native route is both faster and the more robust on scans with
+/// holes, where a pseudonormal sign has no consistent inside to consult. The result records
+/// which ran.
+/// </summary>
+internal sealed class OffsetHandler
+{
+    /// <summary>Recorded on offsets whose field came from the native library.</summary>
+    public const string NativeProducer = "GeometryEngine.Modifiers.Offset (native field)";
+
+    /// <summary>Recorded on offsets whose field came from the managed BVH.</summary>
+    public const string ManagedProducer = "GeometryEngine.Modifiers.Offset (managed field)";
+
+    /// <summary>
+    /// Cells across the longest side of the sampled volume when the caller leaves the cell size to
+    /// the engine. High enough to keep a bolus recognisable, low enough to stay interactive.
+    /// </summary>
+    private const int DefaultResolution = 32;
+
+    /// <summary>
+    /// Ceiling on the cells sampled, whatever cell size is asked for. A caller passing a fine cell
+    /// on a large model would otherwise ask for millions of queries - minutes of work. The native
+    /// field affords a far larger budget than the managed one.
+    /// </summary>
+    private const double NativeCellBudget = 400_000;
+
+    private const double ManagedCellBudget = 50_000;
+
+    /// <summary>Padding beyond the offset distance, so the new surface is never clipped by the box.</summary>
+    private const double BoxMarginCells = 2;
+
+    public Result<IMesh> Handle(OffsetRequest request)
+    {
+        ArgumentNullException.ThrowIfNull(request.Mesh);
+
+        if (request.Mesh.IsEmpty)
+        {
+            return MeshErrors.EmptyOperand;
+        }
+
+        if (!double.IsFinite(request.Distance) || !double.IsFinite(request.CellSize))
+        {
+            return ModifierErrors.NonFiniteParameter;
+        }
+
+        var mesh = request.Mesh;
+        var min = mesh.Vertices[0];
+        var max = mesh.Vertices[0];
+        foreach (var vertex in mesh.Vertices)
+        {
+            min = min.ComponentMin(vertex);
+            max = max.ComponentMax(vertex);
+        }
+
+        var native = DistanceFieldNative.IsAvailable;
+        var size = max - min;
+        var longest = Math.Max(size.X, Math.Max(size.Y, size.Z));
+        var cell = request.CellSize > 0 ? request.CellSize : longest / DefaultResolution;
+        if (!(cell > 0))
+        {
+            return MeshErrors.EmptyOperand;
+        }
+
+        // Coarsen rather than let a fine cell run the sample count away. Estimated over the padded
+        // box, which is what is actually sampled.
+        var budget = native ? NativeCellBudget : ManagedCellBudget;
+        var padded = size + new Vec3(1, 1, 1) * (2 * (Math.Abs(request.Distance) + (BoxMarginCells * cell)));
+        var cells = padded.X * padded.Y * padded.Z / Math.Pow(cell, 3);
+        if (cells > budget)
+        {
+            cell *= Math.Cbrt(cells / budget);
+        }
+
+        var padding = new Vec3(1, 1, 1) * (Math.Abs(request.Distance) + (BoxMarginCells * cell));
+        min -= padding;
+        max += padding;
+
+        var metadata = mesh.Metadata with { CreatedBy = native ? NativeProducer : ManagedProducer };
+
+        if (native)
+        {
+            var result = OffsetNatively(mesh, request.Distance, min, max, cell, metadata);
+            if (result.IsSuccess || result.Error != ManifoldErrors.Unavailable)
+            {
+                return result;
+            }
+
+            // Only an unloadable library falls through; anything else is a real answer.
+            metadata = mesh.Metadata with { CreatedBy = ManagedProducer };
+        }
+
+        var bvh = new MeshBvh(mesh);
+        var managed = ManifoldKernel.LevelSet(bvh.SignedDistance, min, max, cell, request.Distance, metadata);
+        return managed.IsFailure && managed.Error == ManifoldErrors.EmptyResult
+            ? ModifierErrors.OffsetFailed
+            : managed;
+    }
+
+    private static Result<IMesh> OffsetNatively(IMesh mesh, double distance, Vec3 min, Vec3 max, double cell, MeshMetadata metadata)
+    {
+        NativeMesh output = default;
+        try
+        {
+            var status = (DistanceFieldStatus)DistanceFieldNative.ge_offset(
+                NativeMeshArrays.Flatten(mesh.Vertices),
+                (nuint)mesh.VertexCount,
+                [.. mesh.Triangles],
+                (nuint)mesh.TriangleCount,
+                distance,
+                [min.X, min.Y, min.Z, max.X, max.Y, max.Z],
+                cell,
+                out output);
+
+            return status switch
+            {
+                DistanceFieldStatus.Ok => Extract(output, metadata),
+                DistanceFieldStatus.ManifoldUnavailable => ManifoldErrors.Unavailable,
+                DistanceFieldStatus.LevelSetFailed => ModifierErrors.OffsetFailed,
+                DistanceFieldStatus.EmptyMesh => MeshErrors.EmptyOperand,
+                _ => new Error("Modifiers.NativeFailure", $"The native distance field failed with status {status}."),
+            };
+        }
+        catch (Exception exception) when (
+            exception is DllNotFoundException or BadImageFormatException or EntryPointNotFoundException)
+        {
+            return ManifoldErrors.Unavailable;
+        }
+        finally
+        {
+            if (output.Vertices != IntPtr.Zero || output.Triangles != IntPtr.Zero)
+            {
+                DistanceFieldNative.ge_mesh_free(ref output);
+            }
+        }
+    }
+
+    private static Result<IMesh> Extract(NativeMesh native, MeshMetadata metadata)
+    {
+        var vertexCount = (int)native.VertexCount;
+        var triangleCount = (int)native.TriangleCount;
+        if (vertexCount == 0 || triangleCount == 0)
+        {
+            return ModifierErrors.OffsetFailed;
+        }
+
+        var flat = new double[vertexCount * 3];
+        Marshal.Copy(native.Vertices, flat, 0, flat.Length);
+
+        var vertices = ImmutableArray.CreateBuilder<Vec3>(vertexCount);
+        for (var i = 0; i < vertexCount; i++)
+        {
+            vertices.Add(new Vec3(flat[i * 3], flat[(i * 3) + 1], flat[(i * 3) + 2]));
+        }
+
+        var triangles = new int[triangleCount * 3];
+        Marshal.Copy(native.Triangles, triangles, 0, triangles.Length);
+
+        return ImmutableMesh.Create(vertices.MoveToImmutable(), ImmutableArray.Create(triangles), metadata);
+    }
+}
+
+/// <summary>Ask for a mesh offset out and back again.</summary>
+public sealed record DoubleOffsetRequest(IMesh Mesh, double Distance, int Iterations, double CellSize);
+
+/// <summary>
+/// Out by the distance, then back by the same. The round trip rounds away concave detail
+/// smaller than the distance - a morphological closing - which is what smoothing wants.
+/// </summary>
+internal sealed class DoubleOffsetHandler(OffsetHandler offset)
+{
+    private readonly OffsetHandler _offset = offset;
+
+    public Result<IMesh> Handle(DoubleOffsetRequest request)
+    {
+        ArgumentNullException.ThrowIfNull(request.Mesh);
+
+        if (request.Mesh.IsEmpty)
+        {
+            return MeshErrors.EmptyOperand;
+        }
+
+        var current = request.Mesh;
+        for (var i = 0; i < request.Iterations; i++)
+        {
+            var grown = _offset.Handle(new OffsetRequest(current, request.Distance, request.CellSize));
+            if (grown.IsFailure)
+            {
+                return i == 0 ? grown : Result.Success(current);
+            }
+
+            var shrunk = _offset.Handle(new OffsetRequest(grown.Value, -request.Distance, request.CellSize));
+            if (shrunk.IsFailure)
+            {
+                return i == 0 ? shrunk : Result.Success(current);
+            }
+
+            current = shrunk.Value;
+        }
+
+        return Result.Success(current);
+    }
+}
+
+/// <summary>Ask for a mesh reduced towards a triangle count.</summary>
+public sealed record DecimateRequest(IMesh Mesh, int TargetTriangleCount);
+
+internal sealed class DecimateHandler
+{
+    public Result<IMesh> Handle(DecimateRequest request)
+    {
+        ArgumentNullException.ThrowIfNull(request.Mesh);
+
+        if (request.Mesh.IsEmpty)
+        {
+            return MeshErrors.EmptyOperand;
+        }
+
+        if (request.TargetTriangleCount < 4)
+        {
+            return ModifierErrors.TargetTooSmall;
+        }
+
+        var (vertices, triangles) = MeshDecimator.Decimate(
+            request.Mesh, request.TargetTriangleCount, MeshCleanup.RelativeTolerance(request.Mesh));
+
+        return ImmutableMesh.Create(vertices, triangles, request.Mesh.Metadata with { CreatedBy = "GeometryEngine.Modifiers.Decimate" });
+    }
+}
+
+/// <summary>Ask for a mesh's redundant geometry to be cleared away.</summary>
+public sealed record RepairRequest(IMesh Mesh);
+
+/// <summary>
+/// Welds at a tolerance scaled to the model, then drops what describes no surface: faces whose
+/// corners welded together, faces with no area, repeated faces, and vertices left unused.
+/// </summary>
+internal sealed class RepairHandler
+{
+    public Result<IMesh> Handle(RepairRequest request)
+    {
+        ArgumentNullException.ThrowIfNull(request.Mesh);
+
+        if (request.Mesh.IsEmpty)
+        {
+            return MeshErrors.EmptyOperand;
+        }
+
+        var tolerance = MeshCleanup.RelativeTolerance(request.Mesh);
+        var (vertices, welded) = MeshCleanup.Weld(request.Mesh.Vertices, request.Mesh.Triangles, tolerance);
+
+        var areaFloor = tolerance * tolerance;
+        var withArea = new List<int>(welded.Count);
+        for (var i = 0; i + 2 < welded.Count; i += 3)
+        {
+            var a = vertices[welded[i]];
+            var b = vertices[welded[i + 1]];
+            var c = vertices[welded[i + 2]];
+            if ((b - a).Cross(c - a).Length * 0.5 > areaFloor)
+            {
+                withArea.Add(welded[i]);
+                withArea.Add(welded[i + 1]);
+                withArea.Add(welded[i + 2]);
+            }
+        }
+
+        var (compactVertices, compactTriangles) = MeshCleanup.Compact(vertices, MeshCleanup.DropRepeatedFaces(withArea));
+
+        return ImmutableMesh.Create(compactVertices, compactTriangles, request.Mesh.Metadata with { CreatedBy = "GeometryEngine.Modifiers.Repair" });
+    }
+}
+
+/// <summary>Ask for surfaces passing through each other to be re-cut.</summary>
+public sealed record RepairSelfIntersectionsRequest(IMesh Mesh);
+
+/// <summary>
+/// Separates the mesh into its shells and unions them back together through the native kernel,
+/// which re-cuts every surface where one shell passes through another.
+///
+/// A self-union of the whole mesh is not the same thing, and gets overlapping shells wrong: the
+/// kernel reads its input as one solid, so the region two shells share is enclosed twice, reads
+/// as inside-out, and is carved away rather than kept. Unioning shell by shell asks the question
+/// the kernel is built to answer. A mesh the kernel will not accept comes back unchanged rather
+/// than failing a pipeline over it.
+/// </summary>
+internal sealed class RepairSelfIntersectionsHandler
+{
+    private const string Producer = "GeometryEngine.Modifiers.RepairSelfIntersections";
+
+    private readonly Evaluators.ComponentsHandler _components = new();
+
+    public Result<IMesh> Handle(RepairSelfIntersectionsRequest request)
+    {
+        ArgumentNullException.ThrowIfNull(request.Mesh);
+
+        if (request.Mesh.IsEmpty)
+        {
+            return MeshErrors.EmptyOperand;
+        }
+
+        var metadata = request.Mesh.Metadata with { CreatedBy = Producer };
+        var unchanged = Result.Success(request.Mesh.WithMetadata(metadata with { CreatedBy = $"{Producer} (unchanged)" }));
+
+        var shells = _components.Handle(new Evaluators.ComponentsRequest(request.Mesh));
+        if (shells.IsFailure)
+        {
+            return unchanged;
+        }
+
+        var merged = shells.Value[0];
+        for (var i = 1; i < shells.Value.Length; i++)
+        {
+            var union = ManifoldKernel.Union(merged, shells.Value[i], metadata);
+            if (union.IsFailure)
+            {
+                return unchanged;
+            }
+
+            merged = union.Value.Mesh;
+        }
+
+        if (shells.Value.Length == 1)
+        {
+            // One shell passing through itself: the kernel's boolean re-cuts it on the way through.
+            var resolved = ManifoldKernel.Union(merged, merged, metadata);
+            return resolved.IsSuccess ? Result.Success(resolved.Value.Mesh) : unchanged;
+        }
+
+        return Result.Success(merged.WithMetadata(metadata));
+    }
+}
+
+/// <summary>The <see cref="IGeometryModifiers"/> facade over the modifier slices.</summary>
+internal sealed class GeometryModifiers : IGeometryModifiers
+{
+    private readonly OffsetHandler _offset = new();
+    private readonly DoubleOffsetHandler _doubleOffset;
+    private readonly DecimateHandler _decimate = new();
+    private readonly RepairHandler _repair = new();
+    private readonly RepairSelfIntersectionsHandler _selfIntersections = new();
+
+    public GeometryModifiers()
+    {
+        _doubleOffset = new DoubleOffsetHandler(_offset);
+    }
+
+    public Result<IMesh> Offset(IMesh mesh, double distance, double cellSize = 0) =>
+        _offset.Handle(new OffsetRequest(mesh, distance, cellSize));
+
+    public Result<IMesh> DoubleOffset(IMesh mesh, double distance, int iterations = 1, double cellSize = 0) =>
+        _doubleOffset.Handle(new DoubleOffsetRequest(mesh, distance, iterations, cellSize));
+
+    public Result<IMesh> Decimate(IMesh mesh, int targetTriangleCount) =>
+        _decimate.Handle(new DecimateRequest(mesh, targetTriangleCount));
+
+    public Result<IMesh> Repair(IMesh mesh) => _repair.Handle(new RepairRequest(mesh));
+
+    public Result<IMesh> RepairSelfIntersections(IMesh mesh) =>
+        _selfIntersections.Handle(new RepairSelfIntersectionsRequest(mesh));
+}

@@ -1,4 +1,3 @@
-using System.Reflection;
 using System.Runtime.InteropServices;
 
 namespace GeometryEngine.Internal.Native;
@@ -17,6 +16,9 @@ internal enum ManifoldError
     RunIndexWrongLength = 9,
     FaceIdWrongLength = 10,
     InvalidConstruction = 11,
+    ResultTooLarge = 12,
+    InvalidTangents = 13,
+    Cancelled = 14,
 }
 
 internal static unsafe class ManifoldNative
@@ -35,84 +37,23 @@ internal static unsafe class ManifoldNative
     public static bool IsAvailable => AvailableLazy.Value;
 
     private static readonly Lazy<bool> AvailableLazy = new(
-        () => ProbePaths().Any(path => File.Exists(path)),
+        () => NativeLibraryResolver.ProbePaths(LibraryName).Any(File.Exists),
         LazyThreadSafetyMode.ExecutionAndPublication);
 
     static ManifoldNative()
     {
-        NativeLibrary.SetDllImportResolver(typeof(ManifoldNative).Assembly, DllImportResolver);
+        NativeLibraryResolver.Register(LibraryName);
     }
 
-    private static IntPtr DllImportResolver(string libraryName, Assembly assembly, DllImportSearchPath? searchPath)
+    /// <summary>Signed distance callback for the level-set mesher. Manifold keeps where it is positive.</summary>
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    public delegate double SdfCallback(double x, double y, double z, IntPtr context);
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct NativeVec2
     {
-        if (libraryName != LibraryName)
-        {
-            return IntPtr.Zero;
-        }
-
-        foreach (var path in ProbePaths())
-        {
-            if (File.Exists(path) && NativeLibrary.TryLoad(path, out var handle))
-            {
-                return handle;
-            }
-        }
-
-        return IntPtr.Zero;
-    }
-
-    /// <summary>
-    /// Every location the native library might sit in, most specific first.
-    ///
-    /// Both the assembly's own directory and the host application's base directory are
-    /// searched, and they are not the same thing: when this library is deployed into a
-    /// plug-in subfolder the natives travel with the assembly, not with the host, so
-    /// probing only <see cref="AppContext.BaseDirectory"/> would miss them.
-    /// </summary>
-    private static IEnumerable<string> ProbePaths()
-    {
-        foreach (var root in Roots())
-        {
-            // Beside the assembly, as the build copies them.
-            yield return Path.Combine(root, "manifoldc.dll");
-            yield return Path.Combine(root, "libmanifoldc.so");
-            yield return Path.Combine(root, "libmanifoldc.dylib");
-
-            // Or in the NuGet runtimes layout, for a packaged consumer.
-            foreach (var rid in new[] { "win-x64", "win-arm64" })
-            {
-                yield return Path.Combine(root, "runtimes", rid, "native", "manifoldc.dll");
-            }
-
-            foreach (var rid in new[] { "linux-x64", "linux-arm64" })
-            {
-                yield return Path.Combine(root, "runtimes", rid, "native", "libmanifoldc.so");
-            }
-
-            foreach (var rid in new[] { "osx-arm64", "osx-x64" })
-            {
-                yield return Path.Combine(root, "runtimes", rid, "native", "libmanifoldc.dylib");
-            }
-        }
-    }
-
-    private static IEnumerable<string> Roots()
-    {
-        // Assembly.Location is empty in a single-file publish, hence the guard.
-        var assemblyDirectory = Path.GetDirectoryName(typeof(ManifoldNative).Assembly.Location);
-        if (!string.IsNullOrEmpty(assemblyDirectory))
-        {
-            yield return assemblyDirectory;
-        }
-
-        var baseDirectory = AppContext.BaseDirectory;
-        if (!string.IsNullOrEmpty(baseDirectory) &&
-            !string.Equals(baseDirectory.TrimEnd(Path.DirectorySeparatorChar),
-                assemblyDirectory?.TrimEnd(Path.DirectorySeparatorChar),
-                StringComparison.OrdinalIgnoreCase))
-        {
-            yield return baseDirectory;
-        }
+        public double X;
+        public double Y;
     }
 
     // Allocation and destruction
@@ -189,4 +130,66 @@ internal static unsafe class ManifoldNative
 
     [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
     public static extern ulong* manifold_meshgl64_tri_verts(IntPtr mem, IntPtr m);
+
+    /// <summary>
+    /// How many vertex pairs in a <c>MeshGL64</c> are one position split in two. Manifold's
+    /// mesh output keys vertices by their full property set, and splits a position wherever runs
+    /// from different operands meet there; these pairs are what stitch it back together.
+    /// </summary>
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    public static extern nuint manifold_meshgl64_merge_length(IntPtr m);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    public static extern ulong* manifold_meshgl64_merge_from_vert(IntPtr mem, IntPtr m);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    public static extern ulong* manifold_meshgl64_merge_to_vert(IntPtr mem, IntPtr m);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    public static extern nuint manifold_num_tri(IntPtr m);
+
+    // Level set. Signatures checked against bindings/c/include/manifold/manifoldc.h at the
+    // commit the shipped binaries were built from; see runtimes/README.md.
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    public static extern IntPtr manifold_alloc_box();
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    public static extern void manifold_delete_box(IntPtr b);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    public static extern IntPtr manifold_box(IntPtr mem, double x1, double y1, double z1, double x2, double y2, double z2);
+
+    /// <summary>
+    /// Meshes the isosurface where the field equals <c>level</c>. Manifold keeps the region where
+    /// the field is greater, so the field must read positive inside the solid.
+    /// </summary>
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    public static extern IntPtr manifold_level_set(
+        IntPtr mem, SdfCallback sdf, IntPtr bounds, double edgeLength, double level, double tolerance, IntPtr context);
+
+    // Extrusion
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    public static extern IntPtr manifold_alloc_simple_polygon();
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    public static extern void manifold_delete_simple_polygon(IntPtr p);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    public static extern IntPtr manifold_alloc_polygons();
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    public static extern void manifold_delete_polygons(IntPtr p);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    public static extern IntPtr manifold_simple_polygon(IntPtr mem, NativeVec2* points, nuint length);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    public static extern IntPtr manifold_polygons(IntPtr mem, IntPtr* simplePolygons, nuint length);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    public static extern IntPtr manifold_extrude(
+        IntPtr mem, IntPtr polygons, double height, int slices, double twistDegrees, double scaleX, double scaleY);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    public static extern IntPtr manifold_translate(IntPtr mem, IntPtr m, double x, double y, double z);
 }

@@ -1,9 +1,13 @@
 using GeometryEngine.Booleans;
+using GeometryEngine.Decals;
 using GeometryEngine.Evaluators;
 using GeometryEngine.Generators;
-using GeometryEngine.MeshIO;
-using GeometryEngine.Transforms;
 using GeometryEngine.Internal;
+using GeometryEngine.MeshIO;
+using GeometryEngine.Modifiers;
+using GeometryEngine.Polygons;
+using GeometryEngine.Spatial;
+using GeometryEngine.Transforms;
 
 namespace GeometryEngine;
 
@@ -21,6 +25,10 @@ public sealed class BspGeometryEngine : IGeometryEngine
     public IGeometryEvaluators Evaluators { get; }
     public IGeometryTransforms Transforms { get; }
     public IGeometryIO IO { get; }
+    public IGeometryModifiers Modifiers { get; }
+    public ISpatialQueries Spatial { get; }
+    public IPolygonOperations Polygons { get; }
+    public IDecalOperations Decals { get; }
 
     private BspGeometryEngine(IBooleans booleans, Tolerance meshTolerance)
     {
@@ -29,6 +37,10 @@ public sealed class BspGeometryEngine : IGeometryEngine
         Evaluators = new GeometryEvaluators(meshTolerance);
         Transforms = new GeometryTransforms();
         IO = new GeometryIO(meshTolerance);
+        Modifiers = new GeometryModifiers();
+        Spatial = new SpatialQueries();
+        Polygons = new PolygonOperations();
+        Decals = new DecalOperations();
     }
 
     private BspGeometryEngine(IToleranceStrategy booleanTolerance, Tolerance meshTolerance)

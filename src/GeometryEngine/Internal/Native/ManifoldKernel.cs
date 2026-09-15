@@ -44,6 +44,178 @@ internal static unsafe class ManifoldKernel
     public static Result<ManifoldOutcome> Intersect(IMesh left, IMesh right, MeshMetadata metadata) =>
         RunOperation(left, right, metadata, ManifoldNative.manifold_intersection);
 
+    /// <summary>
+    /// Re-meshes the isosurface of a signed distance field lying <paramref name="level"/> from
+    /// the surface - the managed-field route to an offset, used where the native distance field
+    /// is unavailable.
+    /// </summary>
+    /// <param name="signedDistance">Distance to the surface, negative inside the solid. Called from several threads at once.</param>
+    public static Result<IMesh> LevelSet(
+        Func<Vec3, double> signedDistance,
+        Vec3 min,
+        Vec3 max,
+        double edgeLength,
+        double level,
+        MeshMetadata metadata) =>
+        Guarded(() =>
+        {
+            // Manifold keeps the region where the field is above the level, so the field is
+            // handed over negated: positive inside the solid.
+            ManifoldNative.SdfCallback callback = (x, y, z, _) => -signedDistance(new Vec3(x, y, z));
+
+            var box = ManifoldNative.manifold_alloc_box();
+            var solid = IntPtr.Zero;
+            try
+            {
+                ManifoldNative.manifold_box(box, min.X, min.Y, min.Z, max.X, max.Y, max.Z);
+
+                solid = ManifoldNative.manifold_alloc_manifold();
+                ManifoldNative.manifold_level_set(solid, callback, box, edgeLength, -level, 0, IntPtr.Zero);
+
+                // The delegate must outlive the native call; without this the JIT is free to
+                // collect it while Manifold is still sampling through it.
+                GC.KeepAlive(callback);
+
+                var status = ManifoldNative.manifold_status(solid);
+                if (status != ManifoldError.NoError)
+                {
+                    return Result.Failure<IMesh>(ManifoldErrors.OperationFailed(status));
+                }
+
+                return ManifoldNative.manifold_num_tri(solid) == 0
+                    ? Result.Failure<IMesh>(ManifoldErrors.EmptyResult)
+                    : FromManifold(solid, metadata);
+            }
+            finally
+            {
+                if (solid != IntPtr.Zero)
+                {
+                    ManifoldNative.manifold_delete_manifold(solid);
+                }
+
+                ManifoldNative.manifold_delete_box(box);
+            }
+        });
+
+    /// <summary>
+    /// Extrudes planar contours into a closed solid between two heights. Manifold triangulates
+    /// the caps and closes the walls itself, so the result is manifold by construction.
+    /// </summary>
+    /// <param name="contours">Outer boundaries wound counter-clockwise, holes clockwise.</param>
+    public static Result<IMesh> Extrude(
+        IReadOnlyList<IReadOnlyList<Vec2>> contours,
+        double zMin,
+        double zMax,
+        MeshMetadata metadata) =>
+        Guarded(() =>
+        {
+            var simplePolygons = new List<IntPtr>(contours.Count);
+            var polygons = IntPtr.Zero;
+            var extruded = IntPtr.Zero;
+            var placed = IntPtr.Zero;
+
+            try
+            {
+                foreach (var contour in contours)
+                {
+                    if (contour.Count < 3)
+                    {
+                        continue;
+                    }
+
+                    var points = new ManifoldNative.NativeVec2[contour.Count];
+                    for (var i = 0; i < contour.Count; i++)
+                    {
+                        points[i] = new ManifoldNative.NativeVec2 { X = contour[i].X, Y = contour[i].Y };
+                    }
+
+                    var polygon = ManifoldNative.manifold_alloc_simple_polygon();
+                    fixed (ManifoldNative.NativeVec2* pPoints = points)
+                    {
+                        ManifoldNative.manifold_simple_polygon(polygon, pPoints, (nuint)points.Length);
+                    }
+
+                    simplePolygons.Add(polygon);
+                }
+
+                if (simplePolygons.Count == 0)
+                {
+                    return Result.Failure<IMesh>(ManifoldErrors.EmptyOperand("extrusion contours"));
+                }
+
+                var handles = simplePolygons.ToArray();
+                polygons = ManifoldNative.manifold_alloc_polygons();
+                fixed (IntPtr* pHandles = handles)
+                {
+                    ManifoldNative.manifold_polygons(polygons, pHandles, (nuint)handles.Length);
+                }
+
+                extruded = ManifoldNative.manifold_alloc_manifold();
+                ManifoldNative.manifold_extrude(extruded, polygons, zMax - zMin, 0, 0, 1, 1);
+
+                var status = ManifoldNative.manifold_status(extruded);
+                if (status != ManifoldError.NoError)
+                {
+                    return Result.Failure<IMesh>(ManifoldErrors.OperationFailed(status));
+                }
+
+                if (ManifoldNative.manifold_num_tri(extruded) == 0)
+                {
+                    return Result.Failure<IMesh>(ManifoldErrors.EmptyResult);
+                }
+
+                // Extrusion always starts at z = 0; lift it onto the requested range.
+                placed = ManifoldNative.manifold_alloc_manifold();
+                ManifoldNative.manifold_translate(placed, extruded, 0, 0, zMin);
+
+                return FromManifold(placed, metadata);
+            }
+            finally
+            {
+                if (placed != IntPtr.Zero)
+                {
+                    ManifoldNative.manifold_delete_manifold(placed);
+                }
+
+                if (extruded != IntPtr.Zero)
+                {
+                    ManifoldNative.manifold_delete_manifold(extruded);
+                }
+
+                if (polygons != IntPtr.Zero)
+                {
+                    ManifoldNative.manifold_delete_polygons(polygons);
+                }
+
+                foreach (var polygon in simplePolygons)
+                {
+                    ManifoldNative.manifold_delete_simple_polygon(polygon);
+                }
+            }
+        });
+
+    /// <summary>Runs a native operation, turning the exceptions a P/Invoke can raise into failures.</summary>
+    private static Result<T> Guarded<T>(Func<Result<T>> operation)
+    {
+        if (!ManifoldNative.IsAvailable)
+        {
+            return Result.Failure<T>(ManifoldErrors.Unavailable);
+        }
+
+        try
+        {
+            return operation();
+        }
+        catch (Exception exception) when (exception is DllNotFoundException or BadImageFormatException)
+        {
+            return Result.Failure<T>(ManifoldErrors.Unusable(exception));
+        }
+        catch (Exception exception) when (exception is EntryPointNotFoundException or MarshalDirectiveException)
+        {
+            return Result.Failure<T>(ManifoldErrors.BindingMismatch(exception));
+        }
+    }
+
     private delegate IntPtr NativeBooleanOp(IntPtr mem, IntPtr a, IntPtr b);
 
     private static Result<ManifoldOutcome> RunOperation(
@@ -269,15 +441,26 @@ internal static unsafe class ManifoldKernel
 
             var outVertProps = new double[vertPropsLen];
             var outTriVerts = new ulong[triVertsLen];
+            var mergeLength = (int)ManifoldNative.manifold_meshgl64_merge_length(meshGl);
+            var mergeFrom = new ulong[mergeLength];
+            var mergeTo = new ulong[mergeLength];
 
             fixed (double* pOutVerts = outVertProps)
             fixed (ulong* pOutTris = outTriVerts)
+            fixed (ulong* pMergeFrom = mergeFrom)
+            fixed (ulong* pMergeTo = mergeTo)
             {
                 ManifoldNative.manifold_meshgl64_vert_properties((IntPtr)pOutVerts, meshGl);
                 ManifoldNative.manifold_meshgl64_tri_verts((IntPtr)pOutTris, meshGl);
+
+                if (mergeLength > 0)
+                {
+                    ManifoldNative.manifold_meshgl64_merge_from_vert((IntPtr)pMergeFrom, meshGl);
+                    ManifoldNative.manifold_meshgl64_merge_to_vert((IntPtr)pMergeTo, meshGl);
+                }
             }
 
-            var vertices = ImmutableArray.CreateBuilder<Vec3>(nVerts);
+            var vertices = new List<Vec3>(nVerts);
             for (var i = 0; i < nVerts; i++)
             {
                 vertices.Add(new Vec3(
@@ -286,13 +469,42 @@ internal static unsafe class ManifoldKernel
                     outVertProps[(i * stride) + 2]));
             }
 
-            var triangles = ImmutableArray.CreateBuilder<int>(triVertsLen);
-            for (var i = 0; i < triVertsLen; i++)
+            // Manifold splits a position into several vertices wherever runs from different
+            // operands meet at it, and records the split in the merge vectors rather than the
+            // index buffer. Read as-is, every such seam is a ring of boundary edges: the solid is
+            // closed, but its triangles do not say so. Applying the merge is what makes the
+            // guarantee visible to everything downstream that pairs edges by index.
+            var remap = new int[nVerts];
+            for (var i = 0; i < nVerts; i++)
             {
-                triangles.Add((int)outTriVerts[i]);
+                remap[i] = i;
             }
 
-            return ImmutableMesh.Create(vertices.MoveToImmutable(), triangles.MoveToImmutable(), metadata);
+            for (var i = 0; i < mergeLength; i++)
+            {
+                if (mergeFrom[i] >= (ulong)nVerts || mergeTo[i] >= (ulong)nVerts)
+                {
+                    return Result.Failure<IMesh>(ManifoldErrors.UnexpectedLayout(
+                        $"merge pair {i} refers past the {nVerts} vertices"));
+                }
+
+                remap[mergeFrom[i]] = (int)mergeTo[i];
+            }
+
+            var triangles = new List<int>(triVertsLen);
+            for (var i = 0; i < triVertsLen; i++)
+            {
+                triangles.Add(remap[outTriVerts[i]]);
+            }
+
+            if (mergeLength == 0)
+            {
+                return ImmutableMesh.Create([.. vertices], [.. triangles], metadata);
+            }
+
+            // Merged-away vertices are left unreferenced; drop them.
+            var (compactVertices, compactTriangles) = MeshCleanup.Compact(vertices, triangles);
+            return ImmutableMesh.Create(compactVertices, compactTriangles, metadata);
         }
         finally
         {
@@ -337,6 +549,9 @@ internal static class ManifoldErrors
     public static Error OperationFailed(ManifoldError status) => new(
         "Manifold.OperationFailed",
         $"Boolean operation failed with status: {status}");
+
+    public static readonly Error EmptyResult =
+        new("Manifold.EmptyResult", "The operation produced an empty solid.");
 
     public static Error UnexpectedLayout(string detail) => new(
         "Manifold.UnexpectedLayout",
