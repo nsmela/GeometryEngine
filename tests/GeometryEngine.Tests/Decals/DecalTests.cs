@@ -90,6 +90,71 @@ public sealed class DecalTests
     }
 
     [Fact]
+    public void A_prebuilt_index_builds_the_same_prism_as_the_mesh_does()
+    {
+        // The reason a caller passes an index is that preparing one dominates the cost of a
+        // prism, so the two routes have to agree exactly or the fast one is not the same feature.
+        const double radius = 20;
+        var cylinder = Fixtures.Cylinder(new Vec3(0, 0, -30), radius, 60, 256);
+        var frame = new SurfaceFrame(new Vec3(0, -radius, 0), Vec3.UnitX, Vec3.UnitZ, -Vec3.UnitY);
+        var outlines = new[] { PlanarPolygon.FromOuter(Assets.Square(-12, -2, 24)) }.ToImmutableArray();
+
+        var fromMesh = Fixtures.Engine.Decals.BuildPrism(new DecalPrismSpec(
+            outlines, frame, 1, 0, 0, MaxEdgeLength: 1, Surface: Maybe<IMesh>.Some(cylinder))).Value;
+
+        using var index = Fixtures.Engine.Spatial.BuildIndex(cylinder).Value;
+        var fromIndex = Fixtures.Engine.Decals.BuildPrism(new DecalPrismSpec(
+            outlines, frame, 1, 0, 0, MaxEdgeLength: 1, SurfaceIndex: Maybe<ISpatialIndex>.Some(index))).Value;
+
+        Check.Equal(fromMesh.VertexCount, fromIndex.VertexCount);
+        for (var i = 0; i < fromMesh.VertexCount; i++)
+        {
+            Check.Close(0, (fromMesh.Vertices[i] - fromIndex.Vertices[i]).Length, 1e-12);
+        }
+    }
+
+    [Fact]
+    public void A_prebuilt_index_stays_usable_after_the_prism_is_built()
+    {
+        // The index is the caller's: building a prism against it must not close it, or the second
+        // label on the same model would fail.
+        var sphere = Fixtures.Sphere(Vec3.Zero, 30, 96);
+        var frame = new SurfaceFrame(new Vec3(0, 0, 30), Vec3.UnitX, Vec3.UnitY, Vec3.UnitZ);
+        var spec = new DecalPrismSpec(
+            [PlanarPolygon.FromOuter(Assets.Square(-5, -5, 10))],
+            frame, 1, 0, 0, MaxEdgeLength: 1, SurfaceIndex: Maybe<ISpatialIndex>.Some(
+                Fixtures.Engine.Spatial.BuildIndex(sphere).Value));
+
+        using var index = spec.SurfaceIndex.Value;
+
+        Check.True(Fixtures.Engine.Decals.BuildPrism(spec).IsSuccess);
+        Check.True(Fixtures.Engine.Decals.BuildPrism(spec).IsSuccess);
+        Check.True(index.ClosestPoint(new Vec3(0, 0, 40)).HasValue);
+    }
+
+    [Fact]
+    public void Projecting_through_a_prebuilt_index_matches_projecting_through_the_mesh()
+    {
+        var sphere = Fixtures.Sphere(Vec3.Zero, 30, 96);
+        var frame = new SurfaceFrame(new Vec3(0, 0, 30), Vec3.UnitX, Vec3.UnitY, Vec3.UnitZ);
+        var prism = Fixtures.Engine.Decals.BuildPrism(
+            new DecalPrismSpec([PlanarPolygon.FromOuter(Assets.Square(-5, -5, 10))], frame, 1, 0, 0)).Value;
+
+        var viaMesh = Fixtures.Engine.Decals.ProjectPrism(sphere, frame, prism).Value;
+
+        using var index = Fixtures.Engine.Spatial.BuildIndex(sphere).Value;
+        var viaIndex = Fixtures.Engine.Decals.ProjectPrism(index, frame, prism).Value;
+
+        Check.Equal(viaMesh.ExtendsPastSurface, viaIndex.ExtendsPastSurface);
+        Check.Equal(viaMesh.SurfaceTooCurved, viaIndex.SurfaceTooCurved);
+        Check.Equal(viaMesh.Mesh.VertexCount, viaIndex.Mesh.VertexCount);
+        for (var i = 0; i < viaMesh.Mesh.VertexCount; i++)
+        {
+            Check.Close(0, (viaMesh.Mesh.Vertices[i] - viaIndex.Mesh.Vertices[i]).Length, 1e-12);
+        }
+    }
+
+    [Fact]
     public void Outlines_too_small_to_triangulate_are_refused()
     {
         var spec = new DecalPrismSpec([PlanarPolygon.FromOuter([Vec2.Zero, Vec2.Zero.LerpTo(new Vec2(1, 0), 1)])], Flat, 1, 0, 0);

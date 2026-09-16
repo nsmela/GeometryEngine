@@ -78,7 +78,14 @@ internal sealed class BuildPrismHandler
         var surfacePoints = new Vec3[points.Count];
         var normals = new Vec3[points.Count];
 
-        if (spec.Surface.HasValue && !spec.Surface.Value.IsEmpty)
+        // An index the caller already holds is theirs: query it and leave it open. One built here
+        // belongs to this call and is closed with it.
+        var supplied = spec.SurfaceIndex.HasValue ? spec.SurfaceIndex.Value as SpatialIndex : null;
+        if (supplied is not null)
+        {
+            PlaceOnSurface(supplied, frame, points, surfacePoints, normals);
+        }
+        else if (spec.Surface.HasValue && !spec.Surface.Value.IsEmpty)
         {
             using var index = new SpatialIndex(spec.Surface.Value);
             PlaceOnSurface(index, frame, points, surfacePoints, normals);
@@ -329,7 +336,12 @@ internal sealed class ProjectPrismHandler
     /// <summary>A surface turned more than 60 degrees from the frame is too curved for the label to sit on.</summary>
     private const double MaxDeviationDot = 0.5;
 
-    public Result<ProjectedDecal> Handle(ProjectPrismRequest request)
+    /// <param name="index">
+    /// The caller's own index over the same surface, when they hold one. Building a tree costs
+    /// far more than casting the rays does, so a caller projecting repeatedly onto an unchanging
+    /// surface passes theirs rather than paying for a new one every call.
+    /// </param>
+    public Result<ProjectedDecal> Handle(ProjectPrismRequest request, SpatialIndex? index = null)
     {
         ArgumentNullException.ThrowIfNull(request.Surface);
         ArgumentNullException.ThrowIfNull(request.Frame);
@@ -341,7 +353,7 @@ internal sealed class ProjectPrismHandler
         }
 
         var frame = request.Frame;
-        var surface = new MeshBvh(request.Surface);
+        var surface = index?.Tree ?? new MeshBvh(request.Surface);
         var towards = -frame.N;
         var vertices = request.Prism.Vertices;
 
@@ -407,4 +419,11 @@ internal sealed class DecalOperations : IDecalOperations
 
     public Result<ProjectedDecal> ProjectPrism(IMesh surface, SurfaceFrame frame, IMesh prism) =>
         _project.Handle(new ProjectPrismRequest(surface, frame, prism));
+
+    public Result<ProjectedDecal> ProjectPrism(ISpatialIndex surface, SurfaceFrame frame, IMesh prism)
+    {
+        ArgumentNullException.ThrowIfNull(surface);
+
+        return _project.Handle(new ProjectPrismRequest(surface.Mesh, frame, prism), surface as SpatialIndex);
+    }
 }

@@ -31,6 +31,7 @@ internal sealed class MeshBvh
     private readonly int[] _triangleOrder;
     private readonly Node[] _nodes;
     private readonly int _nodeCount;
+    private readonly int _maxDepth;
 
     private readonly object _pseudoNormalLock = new();
     private volatile PseudoNormals? _pseudoNormals;
@@ -75,9 +76,15 @@ internal sealed class MeshBvh
         _nodes = new Node[Math.Max(1, triangleCount * 2)];
         if (triangleCount > 0)
         {
-            Build(0, triangleCount, ref _nodeCount);
+            Build(0, triangleCount, ref _nodeCount, 1, ref _maxDepth);
         }
     }
+
+    /// <summary>
+    /// Upper bound on a traversal stack. A descent pops one node and pushes its two children, so
+    /// it never holds more than one entry per level, plus the root.
+    /// </summary>
+    private int StackDepth => (_maxDepth * 2) + 2;
 
     public bool IsEmpty => _nodeCount == 0;
 
@@ -91,10 +98,15 @@ internal sealed class MeshBvh
         return _traversalStack;
     }
 
-    private int Build(int start, int count, ref int nodeCount)
+    private int Build(int start, int count, ref int nodeCount, int depth, ref int maxDepth)
     {
         var nodeIndex = nodeCount++;
         var node = new Node { Start = start, Count = count, Left = -1, Right = -1 };
+
+        if (depth > maxDepth)
+        {
+            maxDepth = depth;
+        }
 
         var min = new Vec3(double.MaxValue, double.MaxValue, double.MaxValue);
         var max = new Vec3(double.MinValue, double.MinValue, double.MinValue);
@@ -122,8 +134,8 @@ internal sealed class MeshBvh
                 mid = start + (count / 2); // Every centroid coincides: halve by count instead.
             }
 
-            node.Left = Build(start, mid - start, ref nodeCount);
-            node.Right = Build(mid, start + count - mid, ref nodeCount);
+            node.Left = Build(start, mid - start, ref nodeCount, depth + 1, ref maxDepth);
+            node.Right = Build(mid, start + count - mid, ref nodeCount, depth + 1, ref maxDepth);
             node.Count = 0;
         }
 
@@ -184,7 +196,7 @@ internal sealed class MeshBvh
             1.0 / (direction.Y == 0 ? 1e-300 : direction.Y),
             1.0 / (direction.Z == 0 ? 1e-300 : direction.Z));
 
-        var stack = RentStack(_nodeCount + 2);
+        var stack = RentStack(StackDepth);
         var top = 0;
         stack[top++] = 0;
 
@@ -235,7 +247,7 @@ internal sealed class MeshBvh
         }
 
         var bestSquared = double.MaxValue;
-        var stack = RentStack(_nodeCount + 2);
+        var stack = RentStack(StackDepth);
         var top = 0;
         stack[top++] = 0;
 
@@ -318,7 +330,7 @@ internal sealed class MeshBvh
         // Its own stack, not the pooled one: this is the only traversal that hands control back
         // to a caller mid-descent, and a callback that queried the tree again would walk over
         // the shared buffer underneath it.
-        var stack = new int[_nodeCount + 2];
+        var stack = new int[StackDepth];
         var top = 0;
         stack[top++] = 0;
 

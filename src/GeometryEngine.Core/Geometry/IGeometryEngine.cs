@@ -408,6 +408,12 @@ public interface IPolygonOperations
 /// along the normal. With a <paramref name="Surface"/>, the frame is walked across it so the
 /// solid follows its curvature rather than a flat plane. <paramref name="MaxEdgeLength"/>
 /// subdivides long outline edges first, so they can bend with the surface; zero leaves them.
+///
+/// <paramref name="SurfaceIndex"/> is the same surface already prepared for querying. Preparing
+/// one costs far more than building a prism does, so a caller that builds prism after prism
+/// against an unchanging surface - a label being dragged across a model, or several labels on
+/// one - should build the index once and pass it here rather than passing the mesh and paying
+/// for a new one every call. When it is set the mesh in <paramref name="Surface"/> is ignored.
 /// </summary>
 public sealed record DecalPrismSpec(
     ImmutableArray<PlanarPolygon> Outlines,
@@ -416,7 +422,8 @@ public sealed record DecalPrismSpec(
     double Sink,
     double Overshoot,
     double MaxEdgeLength = 0,
-    Maybe<IMesh> Surface = default);
+    Maybe<IMesh> Surface = default,
+    Maybe<ISpatialIndex> SurfaceIndex = default);
 
 /// <summary>A prism laid onto a surface, and what went wrong on the way if anything did.</summary>
 public sealed record ProjectedDecal(IMesh Mesh, bool ExtendsPastSurface, bool SurfaceTooCurved);
@@ -428,4 +435,11 @@ public interface IDecalOperations
 
     /// <summary>Moves every vertex of a prism onto the surface along the frame's normal, keeping its height above it.</summary>
     Result<ProjectedDecal> ProjectPrism(IMesh surface, SurfaceFrame frame, IMesh prism);
+
+    /// <summary>
+    /// <see cref="ProjectPrism(IMesh, SurfaceFrame, IMesh)"/> against a surface already prepared
+    /// for querying. Preparing one dominates the cost of a projection, so a caller projecting
+    /// repeatedly onto an unchanging surface should build the index once and reuse it here.
+    /// </summary>
+    Result<ProjectedDecal> ProjectPrism(ISpatialIndex surface, SurfaceFrame frame, IMesh prism);
 }

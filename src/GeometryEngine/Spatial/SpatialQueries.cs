@@ -27,10 +27,11 @@ internal sealed class BuildIndexHandler
 /// </summary>
 internal sealed class SpatialIndex : ISpatialIndex
 {
-    /// <summary>Below this a batch is not worth a native field's construction.</summary>
+    /// <summary>Below this a batch is not worth crossing to a native field even if one is built.</summary>
     private const int NativeBatchThreshold = 256;
 
     private readonly MeshBvh _bvh;
+    private readonly int _triangleCount;
     private readonly object _nativeLock = new();
     private DistanceFieldHandle? _native;
     private bool _nativeTried;
@@ -40,6 +41,43 @@ internal sealed class SpatialIndex : ISpatialIndex
     {
         Mesh = mesh;
         _bvh = new MeshBvh(mesh);
+        _triangleCount = mesh.Triangles.Length / 3;
+    }
+
+    /// <summary>
+    /// Whether a closest-point batch of this size should be answered natively.
+    ///
+    /// A field that is already built answers any batch worth the transition, so use it. One that
+    /// is not has to be constructed first, and construction costs about what a managed pass over
+    /// as many points as the mesh has triangles costs - so a single batch only repays it once it
+    /// is roughly that large. Below that the managed parallel path finishes sooner and the field
+    /// would have been built for one use.
+    ///
+    /// The size of the batch is therefore not enough on its own: an index kept across calls pays
+    /// for a field once, on a batch big enough to deserve it, and every later batch rides on it,
+    /// while an index built for a single call never pays for one at all. Decal work sits on the
+    /// wrong side of that line - a few hundred points against a mesh of hundreds of thousands of
+    /// triangles - and used to build a field per call and discard it.
+    ///
+    /// This is specific to closest points, where the managed path is cheap. Signed distance has
+    /// no cheap managed path to fall back to; see the note there.
+    /// </summary>
+    private bool ShouldGoNative(int count)
+    {
+        if (count < NativeBatchThreshold || !DistanceFieldNative.IsAvailable)
+        {
+            return false;
+        }
+
+        lock (_nativeLock)
+        {
+            if (_nativeTried)
+            {
+                return _native is not null;
+            }
+        }
+
+        return count >= _triangleCount;
     }
 
     public IMesh Mesh { get; }
@@ -86,6 +124,10 @@ internal sealed class SpatialIndex : ISpatialIndex
             return ImmutableArray<double>.Empty;
         }
 
+        // Size alone, unlike the closest-point batch below: the managed fallback here has to build
+        // the pseudonormal tables before it can sign anything, and that costs about what the
+        // native field costs. There is no cheap managed path to protect, so the old threshold
+        // stands.
         var native = points.Length >= NativeBatchThreshold ? NativeField() : null;
         if (native is not null)
         {
@@ -113,7 +155,7 @@ internal sealed class SpatialIndex : ISpatialIndex
         ThrowIfDisposed();
 
         var results = new SurfacePoint[points.Count];
-        var native = points.Count >= NativeBatchThreshold ? NativeField() : null;
+        var native = ShouldGoNative(points.Count) ? NativeField() : null;
 
         if (native is not null)
         {
