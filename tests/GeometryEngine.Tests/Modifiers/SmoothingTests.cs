@@ -1,4 +1,5 @@
 using System.Collections.Immutable;
+using GeometryEngine.Internal.Smoothing;
 
 namespace GeometryEngine.Tests.Modifiers;
 
@@ -311,5 +312,235 @@ public sealed class SmoothEdgesTests
         var smoothed = Fixtures.Engine.Modifiers.SmoothEdges(Fixtures.Sphere(Vec3.Zero, 10, 16)).Value;
 
         Check.Equal("GeometryEngine.Modifiers.SmoothEdges", smoothed.Metadata.CreatedBy);
+    }
+}
+
+[Suite("Modifiers / crease smoothing")]
+public sealed class SmoothCreasesTests
+{
+    [Fact]
+    public void Surface_away_from_a_crease_is_bit_identical()
+    {
+        // The claim the operation exists to make. A sphere with a slice taken off it has a sharp
+        // rim where the cut meets the curve, and a large curved area whose facets fold by only a
+        // few degrees. The curved part must come back untouched - not nearly unchanged, exactly
+        // unchanged - while the rim moves.
+        //
+        // A cube cannot show this: every one of its eight vertices is a corner on a 90-degree
+        // edge, so a gate at 30 degrees legitimately marks all of them and there is no interior
+        // to preserve. The fixture needs tessellated surface away from the crease.
+        var sliced = Sliced();
+
+        var rounded = Fixtures.Engine.Modifiers.SmoothCreases(sliced, roundSharperThan: 30, maxDeviation: 1.0);
+
+        Check.True(rounded.IsSuccess);
+        Check.Equal(sliced.VertexCount, rounded.Value.VertexCount);
+        Check.Equal(sliced.TriangleCount, rounded.Value.TriangleCount);
+
+        var untouched = 0;
+        for (var v = 0; v < sliced.VertexCount; v++)
+        {
+            if (sliced.Vertices[v] == rounded.Value.Vertices[v])
+            {
+                untouched++;
+            }
+        }
+
+        Check.Greater(untouched, sliced.VertexCount * 0.5);
+        Check.Less(untouched, sliced.VertexCount);
+    }
+
+    [Fact]
+    public void No_vertex_leaves_the_deviation_band()
+    {
+        // The bound is enforced, not hoped for: many iterations must not walk the surface out of
+        // the band one pass at a time.
+        var slotted = Slotted();
+        using var index = Fixtures.Engine.Spatial.BuildIndex(slotted).Value;
+
+        var rounded = Fixtures.Engine.Modifiers.SmoothCreases(
+            slotted, roundSharperThan: 30, maxDeviation: 0.25, iterations: 40).Value;
+
+        var worst = 0.0;
+        foreach (var distance in index.SignedDistances(rounded.Vertices))
+        {
+            worst = Math.Max(worst, Math.Abs(distance));
+        }
+
+        // A shade over the band for the closest-point query's own tolerance, not a whole cell.
+        Check.LessOrEqual(worst, 0.2501);
+    }
+
+    [Fact]
+    public void A_tighter_band_moves_the_surface_less()
+    {
+        var slotted = Slotted();
+        using var index = Fixtures.Engine.Spatial.BuildIndex(slotted).Value;
+
+        var loose = Fixtures.Engine.Modifiers.SmoothCreases(slotted, 30, maxDeviation: 1.0, iterations: 20).Value;
+        var tight = Fixtures.Engine.Modifiers.SmoothCreases(slotted, 30, maxDeviation: 0.1, iterations: 20).Value;
+
+        Check.Greater(Worst(index, loose), Worst(index, tight));
+    }
+
+    [Fact]
+    public void A_mesh_with_no_crease_sharp_enough_comes_back_untouched()
+    {
+        // A sphere's facets fold by a couple of degrees, so at 30 nothing qualifies and the
+        // operation must decline to do anything rather than fair the whole surface.
+        var sphere = Fixtures.Sphere(Vec3.Zero, 10, 48);
+
+        var rounded = Fixtures.Engine.Modifiers.SmoothCreases(sphere, roundSharperThan: 30).Value;
+
+        for (var v = 0; v < sphere.VertexCount; v++)
+        {
+            Check.True(sphere.Vertices[v] == rounded.Vertices[v]);
+        }
+    }
+
+    [Fact]
+    public void No_vertex_travels_further_than_the_bound()
+    {
+        // The guarantee, stated the way it is enforced. A cube is the hardest case for it: all
+        // eight vertices are corners on 90-degree edges, so every one is movable and there is no
+        // interior holding anything back. Even then no vertex may exceed the bound.
+        var cube = Fixtures.Box(new Vec3(0, 0, 0), new Vec3(20, 20, 20));
+
+        var rounded = Fixtures.Engine.Modifiers.SmoothCreases(
+            cube, roundSharperThan: 30, maxDeviation: 0.5, iterations: 40).Value;
+
+        for (var v = 0; v < cube.VertexCount; v++)
+        {
+            Check.LessOrEqual((rounded.Vertices[v] - cube.Vertices[v]).Length, 0.5 + 1e-9);
+        }
+    }
+
+    [Fact]
+    public void A_cube_is_not_inflated_the_way_SmoothEdges_inflates_it()
+    {
+        // SmoothEdges gains 168% of a cube's volume. Here the change has to stay within what a
+        // half-millimetre displacement of eight corners can account for, which for a 20 mm cube
+        // is about 9% - volume is a sharp lever on so coarse a shape, and the bound is on
+        // displacement rather than on volume.
+        var cube = Fixtures.Box(new Vec3(0, 0, 0), new Vec3(20, 20, 20));
+
+        var rounded = Fixtures.Engine.Modifiers.SmoothCreases(
+            cube, roundSharperThan: 30, maxDeviation: 0.5, iterations: 20).Value;
+
+        Check.RelativelyClose(Fixtures.VolumeOf(cube), Fixtures.VolumeOf(rounded), 0.10);
+    }
+
+    [Fact]
+    public void The_crease_it_was_pointed_at_actually_softens()
+    {
+        // That it moves the right vertices is not the same as that it rounds them. Counting the
+        // edges still folding past 40 degrees before and after says whether the fold itself. The rim
+        // of a sphere sliced above its equator folds by about 53 degrees, so 40 is the probe that
+        // sees it and 60 sees nothing.
+        // relaxed.
+        var sliced = Sliced();
+
+        MeshAdjacency.FindCreaseVertices(sliced, 40, out var before);
+
+        var rounded = Fixtures.Engine.Modifiers.SmoothCreases(
+            sliced, roundSharperThan: 30, maxDeviation: 0.5, iterations: 20).Value;
+
+        MeshAdjacency.FindCreaseVertices(rounded, 40, out var after);
+
+        Check.Greater(before, 0);
+        Check.Less(after, before);
+    }
+
+    [Fact]
+    public void Connectivity_and_watertightness_survive()
+    {
+        var slotted = Slotted();
+
+        var rounded = Fixtures.Engine.Modifiers.SmoothCreases(slotted, 30, 0.5, 10).Value;
+
+        Check.Equal(slotted.TriangleCount, rounded.TriangleCount);
+        Check.True(Fixtures.TopologyOf(rounded).IsWatertight);
+    }
+
+    [Fact]
+    public void An_open_rim_is_held_still()
+    {
+        var open = OpenSheet();
+        var rim = open.Vertices[0];
+
+        var rounded = Fixtures.Engine.Modifiers.SmoothCreases(open, 10, 1.0, 20).Value;
+
+        Check.Close(rim.X, rounded.Vertices[0].X, 1e-12);
+        Check.Close(rim.Y, rounded.Vertices[0].Y, 1e-12);
+        Check.Close(rim.Z, rounded.Vertices[0].Z, 1e-12);
+    }
+
+    [Fact]
+    public void Bad_parameters_are_refused()
+    {
+        var cube = Fixtures.Box(new Vec3(0, 0, 0), new Vec3(10, 10, 10));
+
+        Check.Equal("Modifiers.NegativeParameter", Fixtures.Engine.Modifiers.SmoothCreases(cube, -1).Error.Code);
+        Check.Equal("Modifiers.NegativeParameter", Fixtures.Engine.Modifiers.SmoothCreases(cube, 30, -1).Error.Code);
+        Check.Equal("Modifiers.NegativeIterations", Fixtures.Engine.Modifiers.SmoothCreases(cube, 30, 1, -1).Error.Code);
+        Check.Equal("Modifiers.StrengthOutOfRange", Fixtures.Engine.Modifiers.SmoothCreases(cube, 30, 1, 1, 0).Error.Code);
+    }
+
+    [Fact]
+    public void A_rounded_mesh_records_what_made_it()
+    {
+        var rounded = Fixtures.Engine.Modifiers.SmoothCreases(Fixtures.Box(new Vec3(0, 0, 0), new Vec3(10, 10, 10))).Value;
+
+        Check.Equal("GeometryEngine.Modifiers.SmoothCreases", rounded.Metadata.CreatedBy);
+    }
+
+    private static double Worst(ISpatialIndex index, IMesh mesh)
+    {
+        var worst = 0.0;
+        foreach (var distance in index.SignedDistances(mesh.Vertices))
+        {
+            worst = Math.Max(worst, Math.Abs(distance));
+        }
+
+        return worst;
+    }
+
+    /// <summary>
+    /// A sphere with a slice cut off: a sharp rim where the cut plane meets the curve, and a
+    /// large tessellated curved area whose folds are far too shallow to qualify.
+    /// </summary>
+    private static IMesh Sliced()
+    {
+        var sphere = Fixtures.Sphere(Vec3.Zero, 10, 48);
+        var knife = Fixtures.Box(new Vec3(-12, -12, 6), new Vec3(12, 12, 12));
+
+        return Fixtures.Engine.Booleans.Subtract(sphere, knife).Value;
+    }
+
+    /// <summary>A 20 mm cube with a 2 mm slot cut half way into one face - creases along the slot.</summary>
+    private static IMesh Slotted()
+    {
+        var cube = Fixtures.Box(new Vec3(0, 0, 0), new Vec3(20, 20, 20));
+        var slot = Fixtures.Box(new Vec3(9, -1, 10), new Vec3(11, 21, 21));
+
+        return Fixtures.Engine.Booleans.Subtract(cube, slot).Value;
+    }
+
+    /// <summary>A folded open sheet: a crease down the middle and a rim all round.</summary>
+    private static IMesh OpenSheet()
+    {
+        ImmutableArray<Vec3> vertices =
+        [
+            new(0, 0, 0),
+            new(0, 4, 0),
+            new(2, 0, 1),
+            new(2, 4, 1),
+            new(4, 0, 0),
+            new(4, 4, 0),
+        ];
+
+        ImmutableArray<int> triangles = [0, 2, 1, 1, 2, 3, 2, 4, 3, 3, 4, 5];
+
+        return ImmutableMesh.Create(vertices, triangles, MeshMetadata.Named("folded sheet")).Value;
     }
 }

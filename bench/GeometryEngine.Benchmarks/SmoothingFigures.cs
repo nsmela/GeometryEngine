@@ -23,6 +23,9 @@ internal static class SmoothingFigures
     /// </summary>
     private const double KeepSharperThan = 30;
 
+    /// <summary>Millimetres of displacement the crease smoother is allowed.</summary>
+    private const double MaxDeviation = 0.25;
+
     public static int Run(string outDirectory)
     {
         var engine = BspGeometryEngine.Create();
@@ -52,11 +55,13 @@ internal static class SmoothingFigures
             var laplacian = engine.Modifiers.LaplacianSmooth(original, Iterations, 0.5);
             var closing = engine.Modifiers.OffsetSmooth(original, Distance, 1, cellSize);
             var edges = engine.Modifiers.SmoothEdges(original, KeepSharperThan);
+            var creases = engine.Modifiers.SmoothCreases(original, KeepSharperThan, MaxDeviation, Iterations);
 
-            if (laplacian.IsFailure || closing.IsFailure || edges.IsFailure)
+            if (laplacian.IsFailure || closing.IsFailure || edges.IsFailure || creases.IsFailure)
             {
                 Console.WriteLine(
-                    $"{name}: fairing {Code(laplacian)}, closing {Code(closing)}, edges {Code(edges)}");
+                    $"{name}: fairing {Code(laplacian)}, closing {Code(closing)}, " +
+                    $"edges {Code(edges)}, creases {Code(creases)}");
                 failed++;
                 continue;
             }
@@ -67,10 +72,12 @@ internal static class SmoothingFigures
             Emit(engine, index, laplacian.Value, outDirectory, name, "fairing");
             Emit(engine, index, closing.Value, outDirectory, name, "closing");
             Emit(engine, index, edges.Value, outDirectory, name, "edges");
+            Emit(engine, index, creases.Value, outDirectory, name, "creases");
 
             Console.WriteLine(
                 $"{name}: {original.TriangleCount} tris -> fairing {laplacian.Value.TriangleCount}, " +
-                $"closing {closing.Value.TriangleCount}, edges {edges.Value.TriangleCount} (cell {cellSize:F3})");
+                $"closing {closing.Value.TriangleCount}, edges {edges.Value.TriangleCount}, " +
+                $"creases {creases.Value.TriangleCount} (cell {cellSize:F3})");
         }
 
         return failed == 0 ? 0 : 1;

@@ -41,8 +41,8 @@ internal static class LaplacianSmoother
         var positions = mesh.Vertices.ToArray();
         var triangles = mesh.Triangles;
 
-        var (neighbourStart, neighbours) = BuildAdjacency(positions.Length, triangles);
-        var pinned = FindBoundaryVertices(positions.Length, triangles);
+        var (neighbourStart, neighbours) = MeshAdjacency.Build(positions.Length, triangles);
+        var pinned = MeshAdjacency.FindBoundaryVertices(positions.Length, triangles);
 
         // μ is negative and slightly larger in magnitude than λ; see PassBand.
         var mu = 1.0 / (PassBand - (1.0 / strength));
@@ -95,84 +95,5 @@ internal static class LaplacianSmoother
         }
 
         Array.Copy(buffer, positions, positions.Length);
-    }
-
-    /// <summary>
-    /// Vertex-to-vertex adjacency in compressed row form: neighbours of v are the entries of the
-    /// second array between start[v] and start[v + 1]. A neighbour is listed once per incident
-    /// edge, so a vertex on a seam where two triangles share an edge sees that neighbour twice
-    /// and it is weighted accordingly - which is the correct umbrella weight for a triangle
-    /// mesh, since each edge contributes once per side.
-    /// </summary>
-    private static (int[] Start, int[] Neighbours) BuildAdjacency(int vertexCount, ImmutableArray<int> triangles)
-    {
-        var degrees = new int[vertexCount];
-        for (var t = 0; t < triangles.Length; t += 3)
-        {
-            // Each corner contributes its two triangle-mates.
-            degrees[triangles[t]] += 2;
-            degrees[triangles[t + 1]] += 2;
-            degrees[triangles[t + 2]] += 2;
-        }
-
-        var start = new int[vertexCount + 1];
-        for (var v = 0; v < vertexCount; v++)
-        {
-            start[v + 1] = start[v] + degrees[v];
-        }
-
-        var neighbours = new int[start[vertexCount]];
-        var cursor = new int[vertexCount];
-        Array.Copy(start, cursor, vertexCount);
-
-        for (var t = 0; t < triangles.Length; t += 3)
-        {
-            var a = triangles[t];
-            var b = triangles[t + 1];
-            var c = triangles[t + 2];
-
-            neighbours[cursor[a]++] = b;
-            neighbours[cursor[a]++] = c;
-            neighbours[cursor[b]++] = a;
-            neighbours[cursor[b]++] = c;
-            neighbours[cursor[c]++] = a;
-            neighbours[cursor[c]++] = b;
-        }
-
-        return (start, neighbours);
-    }
-
-    /// <summary>
-    /// Vertices on an open edge - one used by a single triangle. They are held still: averaging a
-    /// rim vertex against its neighbours pulls the rim inwards, so a torn scan would have its
-    /// hole widened by the act of smoothing it.
-    /// </summary>
-    private static bool[] FindBoundaryVertices(int vertexCount, ImmutableArray<int> triangles)
-    {
-        var uses = new Dictionary<(int, int), int>();
-        for (var t = 0; t < triangles.Length; t += 3)
-        {
-            Count(uses, triangles[t], triangles[t + 1]);
-            Count(uses, triangles[t + 1], triangles[t + 2]);
-            Count(uses, triangles[t + 2], triangles[t]);
-        }
-
-        var pinned = new bool[vertexCount];
-        foreach (var ((a, b), count) in uses)
-        {
-            if (count == 1)
-            {
-                pinned[a] = true;
-                pinned[b] = true;
-            }
-        }
-
-        return pinned;
-    }
-
-    private static void Count(Dictionary<(int, int), int> uses, int a, int b)
-    {
-        var key = a < b ? (a, b) : (b, a);
-        uses[key] = uses.TryGetValue(key, out var count) ? count + 1 : 1;
     }
 }

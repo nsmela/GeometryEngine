@@ -382,6 +382,54 @@ public interface IGeometryModifiers
     Result<IMesh> SmoothEdges(IMesh mesh, double keepSharperThan = 30, double tolerance = 0);
 
     /// <summary>
+    /// Rounds creases and leaves the rest of the surface exactly where it was.
+    ///
+    /// <para>Two restrictions on <see cref="LaplacianSmooth"/> do the work. Only vertices within a
+    /// short reach of a fold sharper than <paramref name="roundSharperThan"/> are written at all,
+    /// so flat and gently curved surface comes back bit-identical rather than merely close. And
+    /// after every pass each moved vertex is pulled back inside a sphere of radius
+    /// <paramref name="maxDeviation"/> about where it started, so the accuracy is a guarantee
+    /// that holds whatever the iteration count, not a figure to be measured afterwards.</para>
+    ///
+    /// <para>Prefer this to <see cref="LaplacianSmooth"/> wherever the model has features worth
+    /// keeping: ungated fairing touches the whole surface and will collapse a thin wall or a
+    /// sharp rim. Prefer it to <see cref="SmoothEdges"/> wherever accuracy is the point, since
+    /// that one preserves flat surface exactly but bulges a crease's neighbourhood by whatever
+    /// the vertex spacing allows, with no bound. Triangle count is unchanged by this one.</para>
+    ///
+    /// <para><b>The gate is only selective on a mesh fine enough for ordinary curvature to fold
+    /// less than the threshold.</b> Measured at 30 degrees across the bolus set, the share of
+    /// vertices it admits runs from 9.5 % on a 100k-triangle mesh and 0 % on a smooth sphere up to
+    /// 95 % on a 1.5k-triangle nose and 98 % on a coarse larynx - on those the facets themselves
+    /// fold past 30 degrees, so nearly everything qualifies and the operation degenerates towards
+    /// a capped version of <see cref="LaplacianSmooth"/>. It is still bounded, which the ungated
+    /// filter is not, but it is no longer picking out creases. Raise the angle on a coarse mesh,
+    /// or subdivide it first.</para>
+    ///
+    /// It rounds a crease; it does not cut a constant-radius fillet, which needs a CAD kernel.
+    /// Where nothing is sharp enough to qualify, the mesh comes back with vertices identical to
+    /// the ones it arrived with, and unlike <see cref="SmoothEdges"/> it accepts torn input.
+    /// </summary>
+    /// <param name="roundSharperThan">
+    /// Degrees of fold, measured from flat: coplanar triangles read zero and a cube's edge reads
+    /// ninety. Edges sharper than this are rounded; shallower ones are left alone.
+    /// </param>
+    /// <param name="maxDeviation">
+    /// The furthest any vertex may travel from where it started, in model units. This is the
+    /// bound, and it is enforced rather than hoped for. It is stated as displacement rather than
+    /// as distance to the original surface on purpose: the latter lets a vertex slide along the
+    /// surface without limit, which shears the shape while satisfying the bound.
+    /// </param>
+    /// <param name="iterations">λ|μ pairs. More rounds the crease further, up to the band.</param>
+    /// <param name="strength">λ, in (0, 1]; see <see cref="LaplacianSmooth"/>.</param>
+    Result<IMesh> SmoothCreases(
+        IMesh mesh,
+        double roundSharperThan = 30,
+        double maxDeviation = 0.25,
+        int iterations = 10,
+        double strength = 0.5);
+
+    /// <summary>
     /// Quadric edge collapse towards <paramref name="targetTriangleCount"/>. Collapses that would
     /// break the manifold or fold a face over are refused, so a coarse mesh may stop above the
     /// target rather than degrade.

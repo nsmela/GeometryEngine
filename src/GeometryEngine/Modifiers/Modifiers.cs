@@ -606,6 +606,65 @@ internal sealed class SmoothEdgesHandler
     }
 }
 
+/// <summary>Ask for a mesh's creases rounded and everything else left exactly alone.</summary>
+public sealed record SmoothCreasesRequest(
+    IMesh Mesh, double RoundSharperThan, double MaxDeviation, int Iterations, double Strength);
+
+/// <summary>
+/// Taubin fairing restricted to the neighbourhood of a fold and bounded by a tolerance band. The
+/// work is in <see cref="CreaseSmoother"/>; this validates and records what happened.
+/// </summary>
+internal sealed class SmoothCreasesHandler
+{
+    private const double MaximumStrength = 1.0;
+
+    public Result<IMesh> Handle(SmoothCreasesRequest request)
+    {
+        ArgumentNullException.ThrowIfNull(request.Mesh);
+
+        if (request.Mesh.IsEmpty)
+        {
+            return MeshErrors.EmptyOperand;
+        }
+
+        if (request.Iterations < 0)
+        {
+            return ModifierErrors.NegativeIterations;
+        }
+
+        if (!double.IsFinite(request.RoundSharperThan)
+            || !double.IsFinite(request.MaxDeviation)
+            || !double.IsFinite(request.Strength))
+        {
+            return ModifierErrors.NonFiniteParameter;
+        }
+
+        if (request.RoundSharperThan < 0 || request.MaxDeviation < 0)
+        {
+            return ModifierErrors.NegativeParameter;
+        }
+
+        if (request.Strength <= 0 || request.Strength > MaximumStrength)
+        {
+            return ModifierErrors.StrengthOutOfRange;
+        }
+
+        var smoothed = CreaseSmoother.Smooth(
+            request.Mesh,
+            request.RoundSharperThan,
+            request.MaxDeviation,
+            request.Iterations,
+            request.Strength);
+
+        // GeometryEngine's metadata carries a name and a producer, with no property bag to put
+        // the crease and vertex counts in. A caller that needs them can compare the vertices, and
+        // where nothing qualified they are identical.
+        var metadata = request.Mesh.Metadata with { CreatedBy = "GeometryEngine.Modifiers.SmoothCreases" };
+
+        return ImmutableMesh.Create(smoothed.Vertices, smoothed.Triangles, metadata);
+    }
+}
+
 /// <summary>The <see cref="IGeometryModifiers"/> facade over the modifier slices.</summary>
 internal sealed class GeometryModifiers : IGeometryModifiers
 {
@@ -617,6 +676,7 @@ internal sealed class GeometryModifiers : IGeometryModifiers
     private readonly LaplacianSmoothHandler _laplacian = new();
     private readonly OffsetSmoothHandler _offsetSmooth = new();
     private readonly SmoothEdgesHandler _smoothEdges = new();
+    private readonly SmoothCreasesHandler _smoothCreases = new();
 
     public GeometryModifiers()
     {
@@ -631,6 +691,15 @@ internal sealed class GeometryModifiers : IGeometryModifiers
 
     public Result<IMesh> SmoothEdges(IMesh mesh, double keepSharperThan = 30, double tolerance = 0) =>
         _smoothEdges.Handle(new SmoothEdgesRequest(mesh, keepSharperThan, tolerance));
+
+    public Result<IMesh> SmoothCreases(
+        IMesh mesh,
+        double roundSharperThan = 30,
+        double maxDeviation = 0.25,
+        int iterations = 10,
+        double strength = 0.5) =>
+        _smoothCreases.Handle(
+            new SmoothCreasesRequest(mesh, roundSharperThan, maxDeviation, iterations, strength));
 
     public Result<IMesh> Offset(IMesh mesh, double distance, double cellSize = 0) =>
         _offset.Handle(new OffsetRequest(mesh, distance, cellSize));
