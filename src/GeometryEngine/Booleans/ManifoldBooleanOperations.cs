@@ -1,4 +1,4 @@
-using GeometryEngine.Core.Common;
+using BasicResults;
 using GeometryEngine.Core.Geometry;
 using GeometryEngine.Internal.Native;
 

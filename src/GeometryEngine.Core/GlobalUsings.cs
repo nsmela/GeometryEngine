@@ -1,2 +1,2 @@
-global using GeometryEngine.Core.Common;
+global using BasicResults;
 global using GeometryEngine.Core.Geometry.Primitives;

@@ -39,12 +39,22 @@
     <!--
       Core's assembly is placed in this package's lib/ folder by the target below. PrivateAssets
       on the reference stops it also being declared as a package dependency, which would send
-      consumers looking for a GeometryEngine.Core package that is never published.
+      consumers looking for a GeometryEngine.Core package that is never published. The same
+      target sweeps up BasicResults.dll for the same reason: BasicResults is not on NuGet, so
+      declaring it as a dependency would send consumers looking for a package that is not there.
+      Publish BasicResults and this becomes a PackageReference instead.
     -->
     <TargetsForTfmSpecificBuildOutput>$(TargetsForTfmSpecificBuildOutput);IncludeCoreAssemblyInPackage</TargetsForTfmSpecificBuildOutput>
   </PropertyGroup>
 
   <ItemGroup><ProjectReference Include="../GeometryEngine.Core/GeometryEngine.Core.csproj" PrivateAssets="all" /></ItemGroup>
+
+  <!--
+    Referenced directly as well as through Core. Core's reference does not flow here because
+    this project marks its reference to Core private, and this project's own code returns
+    Result<T> throughout. See Directory.Build.props for BasicResultsProject.
+  -->
+  <ItemGroup><ProjectReference Include="$(BasicResultsProject)" PrivateAssets="all" /></ItemGroup>
 
   <!--
     Planar polygon work only: Clipper2 offsets and unions outlines, NetTopologySuite computes
