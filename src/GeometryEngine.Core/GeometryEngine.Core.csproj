@@ -12,10 +12,10 @@
 
   <!--
     Core's public API returns Result<T> and Maybe<T>, so this reference is deliberately not
-    private: a consumer of Core cannot read what Core returns without it. BasicResultsProject is
-    defined in Directory.Build.props, which explains why it is a project rather than a package.
+    private: a consumer of Core cannot read what Core returns without it. The version is pinned
+    in Directory.Build.props.
   -->
   <ItemGroup>
-    <ProjectReference Include="$(BasicResultsProject)" />
+    <PackageReference Include="BasicResults" Version="$(BasicResultsVersion)" />
   </ItemGroup>
 </Project>

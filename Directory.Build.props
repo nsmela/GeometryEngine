@@ -10,13 +10,10 @@
   </PropertyGroup>
 
   <!--
-    Result, Error and Maybe live in BasicResults - https://github.com/nsmela/BasicResults - and
-    come from a sibling checkout of this repository rather than from a package: the solution
-    clears all NuGet sources, so a PackageReference would have nowhere to restore from. Override
-    BasicResultsRoot to build against a checkout elsewhere.
+    Result, Error and Maybe come from the BasicResults package - one version for both projects
+    here, so Core and Engine can never resolve different ones.
   -->
   <PropertyGroup>
-    <BasicResultsRoot Condition="'$(BasicResultsRoot)' == ''">$(MSBuildThisFileDirectory)..\BasicResults\</BasicResultsRoot>
-    <BasicResultsProject>$(BasicResultsRoot)src\BasicResults\BasicResults.csproj</BasicResultsProject>
+    <BasicResultsVersion>1.0.0</BasicResultsVersion>
   </PropertyGroup>
 </Project>
