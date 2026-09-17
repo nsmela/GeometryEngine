@@ -45,6 +45,63 @@ internal static unsafe class ManifoldKernel
         RunOperation(left, right, metadata, ManifoldNative.manifold_intersection);
 
     /// <summary>
+    /// Collapses geometry that describes no shape to within <paramref name="tolerance"/>, keeping
+    /// a subset of the original vertices. Bounded error by construction: nothing moves further
+    /// than the tolerance. It takes no triangle-count target, and how far it reduces is decided
+    /// by the geometry - a shape with no redundant detail simplifies barely at all.
+    /// </summary>
+    public static Result<ManifoldOutcome> Simplify(IMesh mesh, double tolerance, MeshMetadata metadata) =>
+        Guarded(() =>
+        {
+            if (mesh.IsEmpty)
+            {
+                return Result.Failure<ManifoldOutcome>(ManifoldErrors.EmptyOperand(mesh.Metadata.Name));
+            }
+
+            var operand = ToManifold(mesh);
+            if (operand.IsFailure)
+            {
+                return Result.Failure<ManifoldOutcome>(operand.Error);
+            }
+
+            var simplified = IntPtr.Zero;
+            try
+            {
+                simplified = ManifoldNative.manifold_alloc_manifold();
+                ManifoldNative.manifold_simplify(simplified, operand.Value.Handle, tolerance);
+
+                var status = ManifoldNative.manifold_status(simplified);
+                if (status != ManifoldError.NoError)
+                {
+                    return Result.Failure<ManifoldOutcome>(ManifoldErrors.OperationFailed(status));
+                }
+
+                if (ManifoldNative.manifold_num_tri(simplified) == 0)
+                {
+                    return Result.Failure<ManifoldOutcome>(ManifoldErrors.EmptyResult);
+                }
+
+                var provenance = operand.Value.Merged
+                    ? ManifoldProvenance.NativeAfterMergingOperands
+                    : ManifoldProvenance.Native;
+
+                var result = FromManifold(simplified, metadata);
+                return result.IsSuccess
+                    ? Result.Success(new ManifoldOutcome(result.Value, provenance))
+                    : Result.Failure<ManifoldOutcome>(result.Error);
+            }
+            finally
+            {
+                if (simplified != IntPtr.Zero)
+                {
+                    ManifoldNative.manifold_delete_manifold(simplified);
+                }
+
+                ManifoldNative.manifold_delete_manifold(operand.Value.Handle);
+            }
+        });
+
+    /// <summary>
     /// Re-meshes the isosurface of a signed distance field lying <paramref name="level"/> from
     /// the surface - the managed-field route to an offset, used where the native distance field
     /// is unavailable.

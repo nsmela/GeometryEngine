@@ -148,6 +148,14 @@ internal static unsafe class ManifoldNative
     [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
     public static extern nuint manifold_num_tri(IntPtr m);
 
+    // Simplification. Collapses edges whose removal moves no surface by more than tolerance,
+    // and keeps a subset of the original vertices - it never invents positions the way a
+    // quadric decimator does. Tolerance 0 means "use the manifold's own", and a value below
+    // that is raised to it, so how far it reduces is decided by the geometry and not by the
+    // caller. Not a triangle-count target; see DecimateCompare in the benchmarks.
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    public static extern IntPtr manifold_simplify(IntPtr mem, IntPtr m, double tolerance);
+
     // Level set. Signatures checked against bindings/c/include/manifold/manifoldc.h at the
     // commit the shipped binaries were built from; see runtimes/README.md.
     [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]

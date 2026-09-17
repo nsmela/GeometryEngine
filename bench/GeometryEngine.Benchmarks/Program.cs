@@ -17,6 +17,7 @@ return (args.Length > 0 ? args[0] : "bench").ToLowerInvariant() switch
     "leak" => LeakCheck.Run(),
     "latticescale" => LatticeScale.Run(),
     "offset" => OffsetProfile.Run(),
+    "decimate" => DecimateCompare.Run(),
     _ => RunBenchmarks(args),
 };
 
