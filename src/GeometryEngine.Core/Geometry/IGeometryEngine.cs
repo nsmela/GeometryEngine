@@ -346,6 +346,42 @@ public interface IGeometryModifiers
     Result<IMesh> OffsetSmooth(IMesh mesh, double distance, int iterations = 1, double cellSize = 0);
 
     /// <summary>
+    /// Subdivides the surface into a smooth interpolation of itself, treating the mesh as a
+    /// control cage: vertex normals are shared across every edge shallower than
+    /// <paramref name="keepSharperThan"/>, turned into tangents, and the surface is refined
+    /// through them.
+    ///
+    /// <para><b>This is subdivision, not filleting, and the difference matters.</b> Flat surface
+    /// is preserved exactly and costs no triangles - a patch through coplanar vertices with
+    /// in-plane tangents is planar, and a cube's faces come back bit-identical. But where it does
+    /// act on a crease it does not round the corner off: it bulges the whole neighbourhood
+    /// outwards, by an amount set by the vertex spacing around that crease rather than by any
+    /// radius. A 12-triangle cube smoothed at 120 degrees gains <b>168 % of its volume</b>. A
+    /// boolean-built mould, whose edges are near 90 degrees, gains <b>209 %</b> and moves 40 % of
+    /// its surface by more than a millimetre. Below 60 degrees the same mould is left alone
+    /// (0.02 %), so the behaviour is a cliff, not a gradient: raise the angle past a model's real
+    /// edges and it inflates.</para>
+    ///
+    /// <para>So this suits a coarse but already-smooth organic mesh, where there is no sharp edge
+    /// to fall off. On a bolus at 30 degrees, 9 % of facets move more than 0.1 mm, the worst by
+    /// 0.32 mm, for 6x the triangles. It is not the tool for rounding the sharp edges of a cut
+    /// model while holding the rest accurate - <see cref="LaplacianSmooth"/> gated by dihedral
+    /// angle would be, and is not implemented.</para>
+    ///
+    /// Torn input is refused outright, as the boolean kernel refuses it.
+    /// </summary>
+    /// <param name="keepSharperThan">
+    /// Degrees of deviation from flat. An edge sharper than this keeps its own normal on each
+    /// side and is left alone; anything shallower is smoothed. The default is deliberately
+    /// conservative: measure the deviation before raising it past a model's real edges.
+    /// </param>
+    /// <param name="tolerance">
+    /// How far the interpolated surface may sit from the mesh describing it - smaller refines
+    /// further and costs more triangles. Zero scales one from the mesh's size.
+    /// </param>
+    Result<IMesh> SmoothEdges(IMesh mesh, double keepSharperThan = 30, double tolerance = 0);
+
+    /// <summary>
     /// Quadric edge collapse towards <paramref name="targetTriangleCount"/>. Collapses that would
     /// break the manifold or fold a face over are refused, so a coarse mesh may stop above the
     /// target rather than degrade.

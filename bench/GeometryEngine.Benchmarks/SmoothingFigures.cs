@@ -17,6 +17,12 @@ internal static class SmoothingFigures
     /// <summary>λ|μ pairs for the fairing.</summary>
     private const int Iterations = 10;
 
+    /// <summary>
+    /// Degrees for the edge smoother. Deliberately below the edge angles a boolean result
+    /// carries: above them it inflates the model rather than rounding it, see SmoothEdges.
+    /// </summary>
+    private const double KeepSharperThan = 30;
+
     public static int Run(string outDirectory)
     {
         var engine = BspGeometryEngine.Create();
@@ -45,11 +51,12 @@ internal static class SmoothingFigures
 
             var laplacian = engine.Modifiers.LaplacianSmooth(original, Iterations, 0.5);
             var closing = engine.Modifiers.OffsetSmooth(original, Distance, 1, cellSize);
+            var edges = engine.Modifiers.SmoothEdges(original, KeepSharperThan);
 
-            if (laplacian.IsFailure || closing.IsFailure)
+            if (laplacian.IsFailure || closing.IsFailure || edges.IsFailure)
             {
                 Console.WriteLine(
-                    $"{name}: fairing {Code(laplacian)}, closing {Code(closing)}");
+                    $"{name}: fairing {Code(laplacian)}, closing {Code(closing)}, edges {Code(edges)}");
                 failed++;
                 continue;
             }
@@ -59,10 +66,11 @@ internal static class SmoothingFigures
             Export(engine, original, Path.Combine(outDirectory, $"{name}-original.stl"));
             Emit(engine, index, laplacian.Value, outDirectory, name, "fairing");
             Emit(engine, index, closing.Value, outDirectory, name, "closing");
+            Emit(engine, index, edges.Value, outDirectory, name, "edges");
 
             Console.WriteLine(
                 $"{name}: {original.TriangleCount} tris -> fairing {laplacian.Value.TriangleCount}, " +
-                $"closing {closing.Value.TriangleCount} (cell {cellSize:F3})");
+                $"closing {closing.Value.TriangleCount}, edges {edges.Value.TriangleCount} (cell {cellSize:F3})");
         }
 
         return failed == 0 ? 0 : 1;

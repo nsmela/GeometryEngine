@@ -25,6 +25,9 @@ internal static class ModifierErrors
     public static readonly Error StrengthOutOfRange =
         new("Modifiers.StrengthOutOfRange", "A smoothing strength belongs in (0, 1]; above one the filter amplifies roughness instead of removing it.");
 
+    public static readonly Error NegativeParameter =
+        new("Modifiers.NegativeParameter", "An angle or tolerance cannot be negative.");
+
     public static readonly Error DistanceBelowCell =
         new("Modifiers.DistanceBelowCell", "The smoothing distance is smaller than one grid cell, so the inflation cannot be resolved. Ask for a finer cell size or a larger distance.");
 }
@@ -534,6 +537,75 @@ internal sealed class OffsetSmoothHandler
     }
 }
 
+/// <summary>Ask for a mesh's creases rounded and its flat surface left alone.</summary>
+public sealed record SmoothEdgesRequest(IMesh Mesh, double KeepSharperThan, double Tolerance);
+
+/// <summary>
+/// Subdivides the surface into a smooth interpolation of itself, by sharing vertex normals across
+/// every edge shallower than the threshold, turning those into tangents, and refining through
+/// them. Manifold does the work; this validates and scales the tolerance.
+///
+/// Half of it behaves as hoped and half does not, which the interface documents with figures.
+/// Flat surface is preserved exactly and costs nothing: a patch through coplanar vertices with
+/// in-plane tangents is planar, and a cube's faces come back untouched and unsubdivided. But
+/// acting on a crease bulges its whole neighbourhood outwards rather than rounding the corner -
+/// a coarse cube gains 168 % of its volume, a boolean mould 209 % - because the interpolated
+/// surface only has to pass through the existing vertices, and between them it is free to swing
+/// as wide as their spacing allows. The threshold is therefore a cliff rather than a dial: below
+/// a model's real edge angles it does nothing, above them it inflates.
+/// </summary>
+internal sealed class SmoothEdgesHandler
+{
+    /// <summary>
+    /// Tolerance as a fraction of the bounding diagonal when the caller names none. The
+    /// interpolated surface is refined until it sits within this of the ideal, so it trades
+    /// triangles for fidelity and needs to be scaled to the model rather than fixed.
+    /// </summary>
+    private const double DefaultToleranceFraction = 0.0005;
+
+    public Result<IMesh> Handle(SmoothEdgesRequest request)
+    {
+        ArgumentNullException.ThrowIfNull(request.Mesh);
+
+        if (request.Mesh.IsEmpty)
+        {
+            return MeshErrors.EmptyOperand;
+        }
+
+        if (!double.IsFinite(request.KeepSharperThan) || !double.IsFinite(request.Tolerance))
+        {
+            return ModifierErrors.NonFiniteParameter;
+        }
+
+        if (request.KeepSharperThan < 0 || request.Tolerance < 0)
+        {
+            return ModifierErrors.NegativeParameter;
+        }
+
+        var mesh = request.Mesh;
+        var tolerance = request.Tolerance;
+        if (tolerance == 0)
+        {
+            var min = mesh.Vertices[0];
+            var max = mesh.Vertices[0];
+            foreach (var vertex in mesh.Vertices)
+            {
+                min = min.ComponentMin(vertex);
+                max = max.ComponentMax(vertex);
+            }
+
+            tolerance = (max - min).Length * DefaultToleranceFraction;
+        }
+
+        var metadata = mesh.Metadata with { CreatedBy = "GeometryEngine.Modifiers.SmoothEdges" };
+        var outcome = ManifoldKernel.SmoothEdges(mesh, request.KeepSharperThan, tolerance, metadata);
+
+        return outcome.IsSuccess
+            ? Result.Success(outcome.Value.Mesh)
+            : Result.Failure<IMesh>(outcome.Error);
+    }
+}
+
 /// <summary>The <see cref="IGeometryModifiers"/> facade over the modifier slices.</summary>
 internal sealed class GeometryModifiers : IGeometryModifiers
 {
@@ -544,6 +616,7 @@ internal sealed class GeometryModifiers : IGeometryModifiers
     private readonly RepairSelfIntersectionsHandler _selfIntersections = new();
     private readonly LaplacianSmoothHandler _laplacian = new();
     private readonly OffsetSmoothHandler _offsetSmooth = new();
+    private readonly SmoothEdgesHandler _smoothEdges = new();
 
     public GeometryModifiers()
     {
@@ -555,6 +628,9 @@ internal sealed class GeometryModifiers : IGeometryModifiers
 
     public Result<IMesh> OffsetSmooth(IMesh mesh, double distance, int iterations = 1, double cellSize = 0) =>
         _offsetSmooth.Handle(new OffsetSmoothRequest(mesh, distance, iterations, cellSize));
+
+    public Result<IMesh> SmoothEdges(IMesh mesh, double keepSharperThan = 30, double tolerance = 0) =>
+        _smoothEdges.Handle(new SmoothEdgesRequest(mesh, keepSharperThan, tolerance));
 
     public Result<IMesh> Offset(IMesh mesh, double distance, double cellSize = 0) =>
         _offset.Handle(new OffsetRequest(mesh, distance, cellSize));

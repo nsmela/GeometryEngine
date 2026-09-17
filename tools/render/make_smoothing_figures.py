@@ -74,13 +74,17 @@ def figure(name):
     fairing = load_stl(DATA / f"{name}-fairing.stl")
     closing = load_stl(DATA / f"{name}-closing.stl")
 
+    edges = load_stl(DATA / f"{name}-edges.stl")
+
     fairing_rgb, fairing_dev = deviation_colours(DATA / f"{name}-fairing.dev", len(fairing))
     closing_rgb, closing_dev = deviation_colours(DATA / f"{name}-closing.dev", len(closing))
+    edges_rgb, edges_dev = deviation_colours(DATA / f"{name}-edges.dev", len(edges))
 
-    fig, axes = plt.subplots(1, 3, figsize=(14.4, 6.0), facecolor=PAPER)
+    fig, axes = plt.subplots(1, 4, figsize=(19.2, 6.0), facecolor=PAPER)
     fig.subplots_adjust(top=0.70, bottom=0.15, left=0.02, right=0.98, wspace=0.04)
     fig.suptitle(
-        f"{name}  ·  LaplacianSmooth (10 λ|μ pairs) against OffsetSmooth (2 mm closing)",
+        f"{name}  ·  LaplacianSmooth (10 λ|μ pairs)  ·  OffsetSmooth (2 mm closing)  ·  "
+        "SmoothEdges (30°)",
         fontsize=14, color=INK, fontweight="bold", y=0.975)
 
     # Captions go above the meshes: the bottom of the figure belongs to the colour bar, and a
@@ -98,6 +102,7 @@ def figure(name):
     for ax, tris, rgb, dev, title in (
         (axes[1], fairing, fairing_rgb, fairing_dev, "LaplacianSmooth"),
         (axes[2], closing, closing_rgb, closing_dev, "OffsetSmooth"),
+        (axes[3], edges, edges_rgb, edges_dev, "SmoothEdges"),
     ):
         render(ax, tris, face_rgb=rgb, limits=limits)
         caption(ax, title, caption_lines(len(tris), dev))
@@ -120,6 +125,7 @@ def figure(name):
     print(f"  {path}")
     print(f"    fairing: {summarise(fairing_dev)}")
     print(f"    closing: {summarise(closing_dev)}")
+    print(f"    edges  : {summarise(edges_dev)}")
 
 
 names = sorted({p.name[: -len("-original.stl")] for p in DATA.glob("*-original.stl")})

@@ -248,3 +248,68 @@ public sealed class OffsetSmoothTests
         return Fixtures.Engine.Booleans.Subtract(cube, slot).Value;
     }
 }
+
+[Suite("Modifiers / edge smoothing")]
+public sealed class SmoothEdgesTests
+{
+    [Fact]
+    public void Flat_surface_is_preserved_exactly_and_costs_no_triangles()
+    {
+        // The half of this operation that behaves as advertised. A cube is six planar faces and
+        // twelve 90-degree edges; below that angle there is no crease to act on, and a planar
+        // patch needs no subdivision to sit within tolerance, so nothing at all should happen.
+        var cube = Fixtures.Box(new Vec3(0, 0, 0), new Vec3(20, 20, 20));
+
+        var smoothed = Fixtures.Engine.Modifiers.SmoothEdges(cube, keepSharperThan: 60);
+
+        Check.True(smoothed.IsSuccess);
+        Check.Equal(cube.TriangleCount, smoothed.Value.TriangleCount);
+        Check.Close(Fixtures.VolumeOf(cube), Fixtures.VolumeOf(smoothed.Value), 1e-9);
+    }
+
+    [Fact]
+    public void Smoothing_past_a_models_real_edges_inflates_it()
+    {
+        // The half that does not. Raised above the cube's 90-degree edges, the interpolated
+        // surface is free to swing out between the few vertices it has to pass through, and the
+        // cube balloons. Pinned as a test because it is the failure mode a caller has to know
+        // about, and a silent 168% volume gain on a clinical model is not acceptable to discover
+        // in the field.
+        var cube = Fixtures.Box(new Vec3(0, 0, 0), new Vec3(20, 20, 20));
+
+        var smoothed = Fixtures.Engine.Modifiers.SmoothEdges(cube, keepSharperThan: 120).Value;
+
+        Check.Greater(Fixtures.VolumeOf(smoothed), Fixtures.VolumeOf(cube) * 2);
+    }
+
+    [Fact]
+    public void A_smooth_organic_mesh_is_refined_gently()
+    {
+        // The case it suits: nothing sharp to fall off, so the surface is subdivided and barely
+        // moved.
+        var sphere = Fixtures.Sphere(Vec3.Zero, 10, 32);
+
+        var smoothed = Fixtures.Engine.Modifiers.SmoothEdges(sphere, keepSharperThan: 30).Value;
+
+        Check.Greater(smoothed.TriangleCount, sphere.TriangleCount);
+        Check.RelativelyClose(Fixtures.VolumeOf(sphere), Fixtures.VolumeOf(smoothed), 0.02);
+        Check.True(Fixtures.TopologyOf(smoothed).IsWatertight);
+    }
+
+    [Fact]
+    public void A_negative_angle_or_tolerance_is_refused()
+    {
+        var sphere = Fixtures.Sphere(Vec3.Zero, 10, 16);
+
+        Check.Equal("Modifiers.NegativeParameter", Fixtures.Engine.Modifiers.SmoothEdges(sphere, -1).Error.Code);
+        Check.Equal("Modifiers.NegativeParameter", Fixtures.Engine.Modifiers.SmoothEdges(sphere, 30, -1).Error.Code);
+    }
+
+    [Fact]
+    public void A_smoothed_mesh_records_what_made_it()
+    {
+        var smoothed = Fixtures.Engine.Modifiers.SmoothEdges(Fixtures.Sphere(Vec3.Zero, 10, 16)).Value;
+
+        Check.Equal("GeometryEngine.Modifiers.SmoothEdges", smoothed.Metadata.CreatedBy);
+    }
+}

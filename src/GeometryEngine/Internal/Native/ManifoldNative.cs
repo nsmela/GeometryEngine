@@ -156,6 +156,21 @@ internal static unsafe class ManifoldNative
     [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
     public static extern IntPtr manifold_simplify(IntPtr mem, IntPtr m, double tolerance);
 
+    // Tangent-based smoothing, in the order it has to be called. CalculateNormals writes vertex
+    // normals into property channels, sharing them across every edge it does not consider sharp;
+    // SmoothByNormals turns those into halfedge tangents; and only Refine* moves any geometry, by
+    // interpolating the surface through them. Rounding a crease and leaving a plane alone both
+    // fall out of that: shared normals bend the patch across a crease, while a patch through
+    // coplanar vertices with in-plane tangents is itself planar.
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    public static extern IntPtr manifold_calculate_normals(IntPtr mem, IntPtr m, int normalIdx, double minSharpAngle);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    public static extern IntPtr manifold_smooth_by_normals(IntPtr mem, IntPtr m, int normalIdx);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    public static extern IntPtr manifold_refine_to_tolerance(IntPtr mem, IntPtr m, double tolerance);
+
     // Level set. Signatures checked against bindings/c/include/manifold/manifoldc.h at the
     // commit the shipped binaries were built from; see runtimes/README.md.
     [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]

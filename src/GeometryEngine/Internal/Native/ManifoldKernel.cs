@@ -45,6 +45,90 @@ internal static unsafe class ManifoldKernel
         RunOperation(left, right, metadata, ManifoldNative.manifold_intersection);
 
     /// <summary>
+    /// Rounds creases while leaving flat surface where it is, by interpolating the surface through
+    /// smooth tangents rather than by filtering vertices.
+    /// </summary>
+    /// <param name="keepSharperThan">
+    /// Degrees. An edge whose dihedral angle exceeds this stays sharp, getting its own normal on
+    /// each side; everything shallower is rounded. Large values round every crease.
+    /// </param>
+    /// <param name="tolerance">How far the interpolated surface may sit from the refined mesh.</param>
+    public static Result<ManifoldOutcome> SmoothEdges(
+        IMesh mesh, double keepSharperThan, double tolerance, MeshMetadata metadata) =>
+        Guarded(() =>
+        {
+            if (mesh.IsEmpty)
+            {
+                return Result.Failure<ManifoldOutcome>(ManifoldErrors.EmptyOperand(mesh.Metadata.Name));
+            }
+
+            var operand = ToManifold(mesh);
+            if (operand.IsFailure)
+            {
+                return Result.Failure<ManifoldOutcome>(operand.Error);
+            }
+
+            var normals = IntPtr.Zero;
+            var tangents = IntPtr.Zero;
+            var refined = IntPtr.Zero;
+            try
+            {
+                normals = ManifoldNative.manifold_alloc_manifold();
+                ManifoldNative.manifold_calculate_normals(normals, operand.Value.Handle, 0, keepSharperThan);
+
+                var status = ManifoldNative.manifold_status(normals);
+                if (status != ManifoldError.NoError)
+                {
+                    return Result.Failure<ManifoldOutcome>(ManifoldErrors.OperationFailed(status));
+                }
+
+                tangents = ManifoldNative.manifold_alloc_manifold();
+                ManifoldNative.manifold_smooth_by_normals(tangents, normals, 0);
+
+                status = ManifoldNative.manifold_status(tangents);
+                if (status != ManifoldError.NoError)
+                {
+                    return Result.Failure<ManifoldOutcome>(ManifoldErrors.OperationFailed(status));
+                }
+
+                // Nothing has moved yet: the two calls above only recorded normals and tangents.
+                // This is the one that interpolates, and so the one that changes the shape.
+                refined = ManifoldNative.manifold_alloc_manifold();
+                ManifoldNative.manifold_refine_to_tolerance(refined, tangents, tolerance);
+
+                status = ManifoldNative.manifold_status(refined);
+                if (status != ManifoldError.NoError)
+                {
+                    return Result.Failure<ManifoldOutcome>(ManifoldErrors.OperationFailed(status));
+                }
+
+                if (ManifoldNative.manifold_num_tri(refined) == 0)
+                {
+                    return Result.Failure<ManifoldOutcome>(ManifoldErrors.EmptyResult);
+                }
+
+                var provenance = operand.Value.Merged
+                    ? ManifoldProvenance.NativeAfterMergingOperands
+                    : ManifoldProvenance.Native;
+
+                var result = FromManifold(refined, metadata);
+                return result.IsSuccess
+                    ? Result.Success(new ManifoldOutcome(result.Value, provenance))
+                    : Result.Failure<ManifoldOutcome>(result.Error);
+            }
+            finally
+            {
+                foreach (var handle in new[] { refined, tangents, normals, operand.Value.Handle })
+                {
+                    if (handle != IntPtr.Zero)
+                    {
+                        ManifoldNative.manifold_delete_manifold(handle);
+                    }
+                }
+            }
+        });
+
+    /// <summary>
     /// Collapses geometry that describes no shape to within <paramref name="tolerance"/>, keeping
     /// a subset of the original vertices. Bounded error by construction: nothing moves further
     /// than the tolerance. It takes no triangle-count target, and how far it reduces is decided
