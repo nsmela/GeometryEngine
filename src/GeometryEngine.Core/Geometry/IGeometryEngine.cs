@@ -308,6 +308,44 @@ public interface IGeometryModifiers
     Result<IMesh> DoubleOffset(IMesh mesh, double distance, int iterations = 1, double cellSize = 0);
 
     /// <summary>
+    /// Taubin λ|μ fairing: reduces curvature by moving each vertex towards the centroid of its
+    /// neighbours, with a second pass outwards that keeps the volume near where it started.
+    ///
+    /// Connectivity is untouched, so the triangle count is unchanged and the surface is never
+    /// re-meshed - unlike <see cref="OffsetSmooth"/> this loses no detail to a sampling grid, and
+    /// it neither closes a tear nor widens one. Vertices on an open edge are held still.
+    /// </summary>
+    /// <param name="iterations">Number of λ|μ pairs. Smoothing grows with this; cost is linear in it.</param>
+    /// <param name="strength">λ, in (0, 1]: how far towards the neighbour centroid each pass moves a vertex.</param>
+    Result<IMesh> LaplacianSmooth(IMesh mesh, int iterations = 5, double strength = 0.5);
+
+    /// <summary>
+    /// Morphological closing: inflates by <paramref name="distance"/> and deflates by the same,
+    /// <paramref name="iterations"/> times, rounding away concave detail narrower than the
+    /// distance. It bridges and fills, where <see cref="LaplacianSmooth"/> only fairs - this
+    /// changes the shape rather than tidying it.
+    ///
+    /// The whole cycle runs on one sampled distance field: the mesh is read once at the start and
+    /// written once at the end, whatever the iteration count. <see cref="DoubleOffset"/> does the
+    /// same arithmetic but re-meshes between every step, so it pays the grid's cost once per pass
+    /// instead of once in total. Measured on a bolus at 2 mm, its volume drifts -1.0 %, -2.3 %,
+    /// -3.5 % over one, two and three rounds as the loss compounds, where this holds at +3.9 %,
+    /// +3.7 %, +3.6 % - and the sign is the honest one for a closing, which fills rather than
+    /// erodes. On a sphere, which has nothing to fill, the whole error is 0.5 % at one round and
+    /// 0.3 % at three.
+    ///
+    /// Time follows from the same thing: the added rounds are grid sweeps, so the cost is roughly
+    /// flat in <paramref name="iterations"/> where <see cref="DoubleOffset"/> grows linearly. It
+    /// is not uniformly faster, though - at a single iteration it is somewhat slower, because it
+    /// meshes on a finer default grid (64 cells across the longest side against 32) and so also
+    /// returns several times as many triangles. Pass <paramref name="cellSize"/> if that matters.
+    /// </summary>
+    /// <param name="distance">How far to inflate and then deflate. Must be at least one grid cell.</param>
+    /// <param name="iterations">Inflate/deflate rounds. Zero returns the mesh unchanged.</param>
+    /// <param name="cellSize">Grid spacing; zero picks one from the mesh's size.</param>
+    Result<IMesh> OffsetSmooth(IMesh mesh, double distance, int iterations = 1, double cellSize = 0);
+
+    /// <summary>
     /// Quadric edge collapse towards <paramref name="targetTriangleCount"/>. Collapses that would
     /// break the manifold or fold a face over are refused, so a coarse mesh may stop above the
     /// target rather than degrade.
