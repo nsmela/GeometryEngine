@@ -22,7 +22,7 @@ SLATE = (0.45, 0.58, 0.68)
 
 def panel(ax, stl, title, subtitle, colour, azimuth=38, elevation=26, edges=False):
     tris = load_stl(OUT / stl)
-    drawn = render(ax, tris, azimuth=azimuth, elevation=elevation, base_rgb=colour, edges=edges)
+    drawn, _ = render(ax, tris, azimuth=azimuth, elevation=elevation, base_rgb=colour, edges=edges)
     ax.set_title(title, fontsize=13, color=INK, pad=6, fontweight="bold")
     ax.text(0.5, -0.015, subtitle, transform=ax.transAxes, ha="center", va="top",
             fontsize=9.5, color="#6a655c", family="monospace")

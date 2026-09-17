@@ -51,9 +51,37 @@ def shade(normals_cam, base_rgb):
     return rgb
 
 
-def render(ax, triangles, azimuth=38, elevation=26, base_rgb=(0.82, 0.55, 0.32), edges=False):
+def shade_each(normals_cam, face_rgb):
+    """shade(), but with one base colour per facet rather than one for the whole mesh."""
+    key = np.array([0.35, 0.45, 0.82])
+    key /= np.linalg.norm(key)
+    fill = np.array([-0.6, -0.2, 0.4])
+    fill /= np.linalg.norm(fill)
+
+    lambert = np.clip(normals_cam @ key, 0, 1)
+    bounce = np.clip(normals_cam @ fill, 0, 1)
+    intensity = 0.30 + 0.62 * lambert + 0.18 * bounce
+    intensity = np.clip(intensity, 0, 1.25)[:, None]
+
+    return np.clip(np.asarray(face_rgb, dtype=float) * intensity, 0, 1)
+
+
+def render(ax, triangles, azimuth=38, elevation=26, base_rgb=(0.82, 0.55, 0.32), edges=False,
+           face_rgb=None, limits=None):
+    """Draw a facet soup.
+
+    face_rgb, when given, is one (r, g, b) per input facet and replaces base_rgb, so a
+    per-facet quantity can be carried into the shading - a deviation heatmap, say. It is
+    filtered and reordered alongside the facets it belongs to.
+
+    limits, when given, is the (cx, cy, half) framing to use instead of fitting this mesh,
+    so several panels can share one camera and be compared pixel for pixel. render returns
+    the framing it used, ready to pass to the next panel.
+    """
     m = view_matrix(azimuth, elevation)
     cam = triangles @ m.T                      # (n, 3, 3) in camera space
+
+    tint = None if face_rgb is None else np.asarray(face_rgb, dtype=float)
 
     e1 = cam[:, 1] - cam[:, 0]
     e2 = cam[:, 2] - cam[:, 0]
@@ -62,16 +90,22 @@ def render(ax, triangles, azimuth=38, elevation=26, base_rgb=(0.82, 0.55, 0.32),
     keep = lengths > 1e-14
     cam, normals, lengths = cam[keep], normals[keep], lengths[keep]
     normals /= lengths[:, None]
+    if tint is not None:
+        tint = tint[keep]
 
     # A face is visible when its outward normal leans towards the camera.
     facing = normals[:, 2] > 0
     cam, normals = cam[facing], normals[facing]
+    if tint is not None:
+        tint = tint[facing]
 
     # Painter's algorithm: the furthest facets go down first.
     order = np.argsort(cam[:, :, 2].mean(axis=1))
     cam, normals = cam[order], normals[order]
+    if tint is not None:
+        tint = tint[order]
 
-    colours = shade(normals, base_rgb)
+    colours = shade(normals, base_rgb) if tint is None else shade_each(normals, tint)
     polys = cam[:, :, :2]
 
     # Drawing each facet with its own colour as the edge closes the hairline gaps
@@ -85,12 +119,16 @@ def render(ax, triangles, azimuth=38, elevation=26, base_rgb=(0.82, 0.55, 0.32),
     )
     ax.add_collection(collection)
 
-    xs, ys = polys[:, :, 0], polys[:, :, 1]
-    pad = 0.06 * max(np.ptp(xs), np.ptp(ys))
-    cx, cy = (xs.min() + xs.max()) / 2, (ys.min() + ys.max()) / 2
-    half = max(np.ptp(xs), np.ptp(ys)) / 2 + pad
+    if limits is None:
+        xs, ys = polys[:, :, 0], polys[:, :, 1]
+        pad = 0.06 * max(np.ptp(xs), np.ptp(ys))
+        cx, cy = (xs.min() + xs.max()) / 2, (ys.min() + ys.max()) / 2
+        half = max(np.ptp(xs), np.ptp(ys)) / 2 + pad
+    else:
+        cx, cy, half = limits
+
     ax.set_xlim(cx - half, cx + half)
     ax.set_ylim(cy - half, cy + half)
     ax.set_aspect("equal")
     ax.axis("off")
-    return len(cam)
+    return len(cam), (cx, cy, half)
