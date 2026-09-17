@@ -14,6 +14,6 @@
     here, so Core and Engine can never resolve different ones.
   -->
   <PropertyGroup>
-    <BasicResultsVersion>1.0.0</BasicResultsVersion>
+    <BasicResultsVersion>1.0.1</BasicResultsVersion>
   </PropertyGroup>
 </Project>
