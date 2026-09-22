@@ -25,6 +25,9 @@ public readonly record struct Vec2(double X, double Y)
     public double Length => Math.Sqrt(LengthSquared);
 
     public double DistanceTo(Vec2 other) => (this - other).Length;
+    public double DistanceSquared(Vec2 other) => (this - other).LengthSquared;
+
+    public Vec2 Normalize() => this / Length;
 
     public Vec2 LerpTo(Vec2 other, double t) => this + ((other - this) * t);
 

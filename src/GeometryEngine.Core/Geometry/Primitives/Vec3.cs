@@ -31,6 +31,9 @@ public readonly record struct Vec3(double X, double Y, double Z)
     public double Length => Math.Sqrt(LengthSquared);
 
     public double DistanceTo(Vec3 other) => (this - other).Length;
+    public double DistanceSquared(Vec3 other) => (this - other).LengthSquared;
+
+    public Vec3 Normalize() => this / Length;
 
     /// <summary>Component-wise minimum. Used to accumulate bounding boxes.</summary>
     public Vec3 ComponentMin(Vec3 other) => new(Math.Min(X, other.X), Math.Min(Y, other.Y), Math.Min(Z, other.Z));

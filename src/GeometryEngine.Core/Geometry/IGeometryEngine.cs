@@ -138,6 +138,10 @@ public sealed record TopologyValidation(
     /// </summary>
     public bool IsEdgeManifold => NonManifoldEdgeCount == 0;
 
+    public bool IsManifold => NonManifoldEdgeCount == 0 && DuplicateFaceCount == 0 && InconsistentWindingEdgeCount == 0;
+
+    public bool HasCorruptTopology => DegenerateTriangleCount > 0 || DuplicateVertexCount > 0 || NonManifoldEdgeCount > 0 || InconsistentWindingEdgeCount > 0;
+
     /// <summary>
     /// A mesh is watertight when every edge is shared by exactly two triangles - closed
     /// <em>and</em> edge-manifold.
