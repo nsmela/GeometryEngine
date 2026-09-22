@@ -402,7 +402,10 @@ internal sealed class ProjectPrismHandler
             projected[i] = hit + (hitNormal * local.Z);
         });
 
-        var mesh = ImmutableMesh.Create([.. projected], request.Prism.Triangles, request.Prism.Metadata);
+        var mesh = ImmutableMesh.Create(
+            [.. projected],
+            request.Prism.Triangles,
+            request.Prism.Metadata.CarriedThrough(MeshOperation.Transform));
         return mesh.IsFailure
             ? Result.Failure<ProjectedDecal>(mesh.Error)
             : new ProjectedDecal(mesh.Value, missed > 0, tooCurved > 0);

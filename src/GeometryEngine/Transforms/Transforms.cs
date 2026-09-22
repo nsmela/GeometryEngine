@@ -37,7 +37,7 @@ internal static class VertexMap
         return ImmutableMesh.Create(
             moved.MoveToImmutable(),
             mesh.Triangles,
-            mesh.Metadata with { CreatedBy = $"GeometryEngine.Transforms.{operation}" });
+            mesh.Metadata.CarriedThrough(MeshOperation.Transform, $"GeometryEngine.Transforms.{operation}"));
     }
 }
 

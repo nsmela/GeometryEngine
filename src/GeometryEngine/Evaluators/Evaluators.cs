@@ -271,7 +271,9 @@ internal sealed class ComponentsHandler
         return ImmutableMesh.Create(
             vertices.ToImmutable(),
             triangles.MoveToImmutable(),
-            mesh.Metadata.WithName($"{mesh.Metadata.Name} part {ordinal}"));
+            mesh.Metadata
+                .CarriedThrough(MeshOperation.Rebuild)
+                .WithName($"{mesh.Metadata.Name} part {ordinal}"));
     }
 
     private static int Find(int[] parent, int index)

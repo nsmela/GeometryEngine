@@ -25,7 +25,15 @@ internal static class BooleanOperands
             : Result.Success();
     }
 
-    /// <summary>Names a result after the operation that produced it, as Fabolus does.</summary>
+    /// <summary>
+    /// Names a result after the operation that produced it, as Fabolus does. The result is a new
+    /// mesh rather than either operand, so its annotations are whatever the left operand's survive
+    /// a <see cref="MeshOperation.Combine"/> - the left one because that is the one the operation
+    /// reads as the subject ("A minus B"), and usually nothing at all.
+    /// </summary>
     public static MeshMetadata DescribeResult(IMesh left, IMesh right, string operation) =>
-        new($"{left.Metadata.Name} {operation} {right.Metadata.Name}", "GeometryEngine.Booleans");
+        new($"{left.Metadata.Name} {operation} {right.Metadata.Name}", "GeometryEngine.Booleans")
+        {
+            Annotations = left.Metadata.Annotations?.Carry(MeshOperation.Combine),
+        };
 }

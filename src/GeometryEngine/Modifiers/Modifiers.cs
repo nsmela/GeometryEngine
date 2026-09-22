@@ -117,7 +117,7 @@ internal sealed class OffsetHandler
         min -= padding;
         max += padding;
 
-        var metadata = mesh.Metadata with { CreatedBy = native ? NativeProducer : ManagedProducer };
+        var metadata = mesh.Metadata.CarriedThrough(MeshOperation.Rebuild, native ? NativeProducer : ManagedProducer);
 
         if (native)
         {
@@ -128,7 +128,7 @@ internal sealed class OffsetHandler
             }
 
             // Only an unloadable library falls through; anything else is a real answer.
-            metadata = mesh.Metadata with { CreatedBy = ManagedProducer };
+            metadata = mesh.Metadata.CarriedThrough(MeshOperation.Rebuild, ManagedProducer);
         }
 
         var bvh = new MeshBvh(mesh);
@@ -265,7 +265,7 @@ internal sealed class DecimateHandler
         var (vertices, triangles) = MeshDecimator.Decimate(
             request.Mesh, request.TargetTriangleCount, MeshCleanup.RelativeTolerance(request.Mesh));
 
-        return ImmutableMesh.Create(vertices, triangles, request.Mesh.Metadata with { CreatedBy = "GeometryEngine.Modifiers.Decimate" });
+        return ImmutableMesh.Create(vertices, triangles, request.Mesh.Metadata.CarriedThrough(MeshOperation.Rebuild, "GeometryEngine.Modifiers.Decimate"));
     }
 }
 
@@ -307,7 +307,7 @@ internal sealed class RepairHandler
 
         var (compactVertices, compactTriangles) = MeshCleanup.Compact(vertices, MeshCleanup.DropRepeatedFaces(withArea));
 
-        return ImmutableMesh.Create(compactVertices, compactTriangles, request.Mesh.Metadata with { CreatedBy = "GeometryEngine.Modifiers.Repair" });
+        return ImmutableMesh.Create(compactVertices, compactTriangles, request.Mesh.Metadata.CarriedThrough(MeshOperation.Rebuild, "GeometryEngine.Modifiers.Repair"));
     }
 }
 
@@ -339,8 +339,12 @@ internal sealed class RepairSelfIntersectionsHandler
             return MeshErrors.EmptyOperand;
         }
 
-        var metadata = request.Mesh.Metadata with { CreatedBy = Producer };
-        var unchanged = Result.Success(request.Mesh.WithMetadata(metadata with { CreatedBy = $"{Producer} (unchanged)" }));
+        var metadata = request.Mesh.Metadata.CarriedThrough(MeshOperation.Rebuild, Producer);
+
+        // The unchanged path hands back the very geometry it was given, so anything the caller
+        // had annotated it with still describes it: only the producer changes.
+        var unchanged = Result.Success(request.Mesh.WithMetadata(
+            request.Mesh.Metadata.WithCreatedBy($"{Producer} (unchanged)")));
 
         var shells = _components.Handle(new Evaluators.ComponentsRequest(request.Mesh));
         if (shells.IsFailure)
@@ -417,7 +421,7 @@ internal sealed class LaplacianSmoothHandler
         return ImmutableMesh.Create(
             vertices,
             triangles,
-            request.Mesh.Metadata with { CreatedBy = "GeometryEngine.Modifiers.LaplacianSmooth" });
+            request.Mesh.Metadata.CarriedThrough(MeshOperation.Rebuild, "GeometryEngine.Modifiers.LaplacianSmooth"));
     }
 }
 
@@ -471,13 +475,15 @@ internal sealed class OffsetSmoothHandler
         }
 
         var mesh = request.Mesh;
-        var metadata = mesh.Metadata with { CreatedBy = "GeometryEngine.Modifiers.OffsetSmooth" };
+        var metadata = mesh.Metadata.CarriedThrough(MeshOperation.Rebuild, "GeometryEngine.Modifiers.OffsetSmooth");
 
         // Nothing asked for means nothing done, rather than a needless round trip through the
-        // grid that would return the mesh re-meshed and slightly different.
+        // grid that would return the mesh re-meshed and slightly different. The geometry is
+        // untouched, so the caller's annotations survive intact rather than being carried.
         if (request.Iterations == 0 || request.Distance == 0)
         {
-            return Result.Success(mesh.WithMetadata(metadata));
+            return Result.Success(mesh.WithMetadata(
+                mesh.Metadata.WithCreatedBy("GeometryEngine.Modifiers.OffsetSmooth")));
         }
 
         var distance = Math.Abs(request.Distance);
@@ -597,7 +603,7 @@ internal sealed class SmoothEdgesHandler
             tolerance = (max - min).Length * DefaultToleranceFraction;
         }
 
-        var metadata = mesh.Metadata with { CreatedBy = "GeometryEngine.Modifiers.SmoothEdges" };
+        var metadata = mesh.Metadata.CarriedThrough(MeshOperation.Rebuild, "GeometryEngine.Modifiers.SmoothEdges");
         var outcome = ManifoldKernel.SmoothEdges(mesh, request.KeepSharperThan, tolerance, metadata);
 
         return outcome.IsSuccess
@@ -656,10 +662,10 @@ internal sealed class SmoothCreasesHandler
             request.Iterations,
             request.Strength);
 
-        // GeometryEngine's metadata carries a name and a producer, with no property bag to put
-        // the crease and vertex counts in. A caller that needs them can compare the vertices, and
-        // where nothing qualified they are identical.
-        var metadata = request.Mesh.Metadata with { CreatedBy = "GeometryEngine.Modifiers.SmoothCreases" };
+        // GeometryEngine's metadata carries a name, a producer and the caller's own annotations,
+        // with nowhere for the engine to report the crease and vertex counts. A caller that needs
+        // them can compare the vertices, and where nothing qualified they are identical.
+        var metadata = request.Mesh.Metadata.CarriedThrough(MeshOperation.Rebuild, "GeometryEngine.Modifiers.SmoothCreases");
 
         return ImmutableMesh.Create(smoothed.Vertices, smoothed.Triangles, metadata);
     }
