@@ -52,12 +52,7 @@ public interface IMeshAnnotations
 /// Descriptive data travelling with a mesh. It is a record, so a caller changes it
 /// by producing a new value with <c>with</c>, never by assigning into an existing one.
 /// </summary>
-/// <remarks>
-/// Left open rather than sealed only so that a consumer still carrying its own subclass keeps
-/// building. Nothing here is designed to be derived from - <see cref="Annotations"/> is how a
-/// consumer attaches its own data - so this can be sealed again once no checkout subclasses it.
-/// </remarks>
-public record MeshMetadata(string Name, string CreatedBy)
+public sealed record MeshMetadata(string Name, string CreatedBy)
 {
     public static readonly MeshMetadata Anonymous = new("mesh", "unknown");
 
