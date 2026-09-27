@@ -1,0 +1,143 @@
+{
+  "engine": "Fabolus main (MeshLib)",
+  "settings": {
+    "iterations": 1,
+    "deflate_distance": 1,
+    "inflate_distance": 0.1,
+    "cell_size": 1
+  },
+  "cases": [
+    {
+      "Case": "chin_bolus",
+      "Ok": true,
+      "InputTriangles": 3216,
+      "OutputTriangles": 6432,
+      "OutputVertices": 3218,
+      "InflationVoxelSizeMm": 0.6014,
+      "OffsetCycleMs": 167.9,
+      "InflateMs": 163.8,
+      "ResizeMs": 1050.3,
+      "TotalMs": 1523.6
+    },
+    {
+      "Case": "ear_bolus",
+      "Ok": true,
+      "InputTriangles": 2810,
+      "OutputTriangles": 5620,
+      "OutputVertices": 2812,
+      "InflationVoxelSizeMm": 0.5516,
+      "OffsetCycleMs": 188.2,
+      "InflateMs": 165.9,
+      "ResizeMs": 642.4,
+      "TotalMs": 1024.7
+    },
+    {
+      "Case": "eye_bolus",
+      "Ok": true,
+      "InputTriangles": 1154,
+      "OutputTriangles": 2308,
+      "OutputVertices": 1156,
+      "InflationVoxelSizeMm": 0.4096,
+      "OffsetCycleMs": 63.3,
+      "InflateMs": 94.6,
+      "ResizeMs": 465.4,
+      "TotalMs": 630.7
+    },
+    {
+      "Case": "larynx small",
+      "Ok": true,
+      "InputTriangles": 2978,
+      "OutputTriangles": 5956,
+      "OutputVertices": 2978,
+      "InflationVoxelSizeMm": 0.731,
+      "OffsetCycleMs": 159.5,
+      "InflateMs": 166.7,
+      "ResizeMs": 339.3,
+      "TotalMs": 683.2
+    },
+    {
+      "Case": "larynx_bolus",
+      "Ok": true,
+      "InputTriangles": 10694,
+      "OutputTriangles": 21388,
+      "OutputVertices": 10694,
+      "InflationVoxelSizeMm": 1.2616,
+      "OffsetCycleMs": 561.4,
+      "InflateMs": 299.6,
+      "ResizeMs": 502.8,
+      "TotalMs": 1432
+    },
+    {
+      "Case": "nose_bolus",
+      "Ok": true,
+      "InputTriangles": 1566,
+      "OutputTriangles": 3132,
+      "OutputVertices": 1568,
+      "InflationVoxelSizeMm": 0.4132,
+      "OffsetCycleMs": 96.5,
+      "InflateMs": 122.4,
+      "ResizeMs": 439.8,
+      "TotalMs": 671.3
+    },
+    {
+      "Case": "scalp_bolus",
+      "Ok": true,
+      "InputTriangles": 8546,
+      "OutputTriangles": 17092,
+      "OutputVertices": 8548,
+      "InflationVoxelSizeMm": 1.0148,
+      "OffsetCycleMs": 449.6,
+      "InflateMs": 303.5,
+      "ResizeMs": 487.5,
+      "TotalMs": 1287
+    },
+    {
+      "Case": "small test",
+      "Ok": true,
+      "InputTriangles": 23552,
+      "OutputTriangles": 47104,
+      "OutputVertices": 23554,
+      "InflationVoxelSizeMm": 0.5238,
+      "OffsetCycleMs": 162.7,
+      "InflateMs": 138.8,
+      "ResizeMs": 354.9,
+      "TotalMs": 692.7
+    },
+    {
+      "Case": "sphere",
+      "Ok": true,
+      "InputTriangles": 9024,
+      "OutputTriangles": 18048,
+      "OutputVertices": 9026,
+      "InflationVoxelSizeMm": 1.5992,
+      "OffsetCycleMs": 739,
+      "InflateMs": 395.8,
+      "ResizeMs": 408.7,
+      "TotalMs": 1567.5
+    },
+    {
+      "Case": "test bolus 107mL",
+      "Ok": true,
+      "InputTriangles": 15212,
+      "OutputTriangles": 30424,
+      "OutputVertices": 15214,
+      "InflationVoxelSizeMm": 0.8717,
+      "OffsetCycleMs": 298.3,
+      "InflateMs": 207.8,
+      "ResizeMs": 336.2,
+      "TotalMs": 923.6
+    },
+    {
+      "Case": "test bolus 7mm",
+      "Ok": true,
+      "InputTriangles": 10594,
+      "OutputTriangles": 21188,
+      "OutputVertices": 10596,
+      "InflationVoxelSizeMm": 1.5439,
+      "OffsetCycleMs": 623.3,
+      "InflateMs": 269.2,
+      "ResizeMs": 201.1,
+      "TotalMs": 1151.1
+    }
+  ]
+}

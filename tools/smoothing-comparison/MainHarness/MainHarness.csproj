@@ -1,0 +1,25 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>main-harness</AssemblyName>
+    <RootNamespace>Fabolus.SmoothingCompare.Main</RootNamespace>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <!-- Measurement code, not shipped: the repo-wide warnings-as-errors would fight the harness. -->
+    <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
+  </PropertyGroup>
+
+  <!--
+    The two packages Fabolus main smooths with, pinned to the versions its Fabolus.Core references.
+    They are restored at build time and nothing from them is committed here; this project is a
+    measurement harness and is not part of the GeometryEngine package or any shipped output.
+    net8.0 rather than main's net8.0-windows: MeshLib's NuGet package carries linux-x64 natives
+    beside the win-x64 ones, and none of the copied code touches WPF.
+  -->
+  <ItemGroup>
+    <PackageReference Include="MeshLib" Version="3.0.6.229" />
+    <PackageReference Include="geometry3Sharp" Version="1.0.324" />
+  </ItemGroup>
+</Project>
