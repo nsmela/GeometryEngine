@@ -210,22 +210,22 @@ def summary_page(pdf, batch, summaries, main, engine):
     )
 
     verdict = (
-        "The geometry matches closely: mean Dice 0.992, HD95 between 0.03 and 0.23 mm, mean "
-        "surface separation under 0.07 mm. The engine sits a touch outside main \u2014 bias "
-        "+0.010 mm on average, never past +0.030 mm \u2014 which the code predicts: main's "
-        "inflation offset runs on a finer grid, and its decimation has no projection target.\n"
+        "The geometry matches closely: mean Dice 0.992, HD95 0.03 to 0.23 mm, mean surface "
+        "separation under 0.07 mm. The engine sits a touch outside main, by +0.010 mm on "
+        "average and never past +0.030 mm, which the code predicts.\n"
         "\n"
         "Against the unsmoothed anatomy the engine is the closer of the two, halving main's "
         "HD95 on nine of eleven.\n"
         "\n"
-        "Topology was the gap, and is now closed. Three outputs came out non-watertight against "
-        "none on main \u2014 not from the level-set offset, whose guarantee held everywhere, but "
-        "from the weld inside Decimate fusing a pinch the offset legitimately emitted. Weld now "
-        "leaves an already-manifold mesh alone, and Decimate eases coincident vertices apart so "
-        "a 32-bit STL cannot fuse them either. All eleven are watertight and manifold, Dice "
-        "unchanged to four decimals. Self-intersections on two cases are what is left.\n"
+        "Topology was the gap and is now closed. Three outputs came out non-watertight, from the "
+        "weld inside Decimate fusing a pinch the level-set offset legitimately emitted \u2014 "
+        "not from the offset, whose guarantee held everywhere. All eleven are now watertight and "
+        "manifold, Dice unchanged to four decimals.\n"
         "\n"
-        "Runtime is 2.1x main's: the offsets cost more, the decimation costs less."
+        "What is left is self-intersections where the offset surface touches itself. Decimate no "
+        "longer collapses across a contact while it has anywhere else to collapse, taking larynx "
+        "small from ten to sixteen crossings down to none to four; chin_bolus keeps two or "
+        "three. Read those counts with care \u2014 the offset is not reproducible run to run."
     )
 
     for x, w, heading, body in (
@@ -313,8 +313,8 @@ def summary_page(pdf, batch, summaries, main, engine):
     rule(fig, row_y + 0.007)
     text(fig, COL0, row_y - 0.011,
          f"{batch['totals']['passed']} of {batch['totals']['cases']} cases pass every default "
-         f"meshcompare check. What fails is self-intersections on two cases, one genus, one "
-         f"volume margin and ICP fitting noise \u2014 none is a distance or overlap metric.",
+         f"meshcompare check. What fails is self-intersections, one genus, one volume margin "
+         f"and ICP noise \u2014 none is a distance or overlap metric.",
          size=8.8, colour=MUTED)
     text(fig, COL1, 0.026, "1", size=9, colour=MUTED, ha="right", va="bottom")
 

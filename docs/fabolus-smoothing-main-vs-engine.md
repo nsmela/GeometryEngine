@@ -288,34 +288,62 @@ indirectly — from how far `RepairSelfIntersections` moved the surface — repo
 was wrong: that repair silently fails to resolve these, so the surface does not move and the
 measurement says nothing.
 
-### Three ways to remove them, all measured, none shipped
+### Removing them, and the measurement problem underneath
 
 `Decimate` is where they are made: it collapses around the pinches and drives one sheet through
 the other. Its `SatisfiesLinkCondition` and `FoldsOver` both read only the triangles around the
 collapsing edge, so neither can see the sheet it is pushing into.
 
+**Before any of the attempts below can be read, one thing has to be said about the measurement.**
+The pipeline is not reproducible run to run (see below), and the crossing count moves with it. At
+the fix's own starting point, four runs of the same input at the same settings gave `chin_bolus`
+0, 0, 2 and 2 crossings, and `larynx small` 10, 11, 10 and 16. **A single run cannot tell a change
+from the noise**, which is how the first pass at this reported a regression on `chin_bolus` that
+was the baseline's own spread. Every figure below is from four runs per configuration.
+
+Three approaches were measured. The third is the one that shipped:
+
 | tried | `larynx small` | elsewhere |
 |---|---|---|
-| **erode on the grid the dilate used** — one cell for both halves of the closing, rather than each picking its own from its own bounds | genus 2 → 1, crossings 13 → 1 | **worse**: `larynx_bolus` gains 6 crossings to 1.39 mm, `test bolus 7mm` 7 to 0.50 mm |
-| **honour the requested cell** — budget raised from 400 k to 5 M so 1.0 mm survives everywhere | genus 1, **0 crossings** | **worse**: `chin_bolus` gains 2 to 0.36 mm, `test bolus 7mm` 2 to 0.52 mm; 2.5x runtime; several cases move further from main |
-| **pin vertices near another sheet** so the decimator leaves them alone | **0 real crossings** across the whole suite | breaks the guarantee that `Decimate` reaches the count it was asked for |
+| **erode on the grid the dilate used** """+EM+""" one cell for both halves of the closing | genus 2 """+EN+"""> 1, crossings down | single-run only; the apparent regressions on `larynx_bolus` and `test bolus 7mm` are not separable from the baseline's spread and are withdrawn |
+| **honour the requested cell** """+EM+""" budget raised from 400 k to 5 M so 1.0 mm survives everywhere | 0 crossings | 2.5x runtime, and several cases move further from main; the apparent regressions are single-run and likewise withdrawn |
+| **keep the decimator away from the contact** """+EM+""" no collapse touching a pinch or its one-ring in the first pass, a second pass without the guard if the count was not reached | **10"""+EN+"""16 crossings become 0"""+EN+"""4** | only `chin_bolus` and `small test` left with any across the suite, and `small test`'s two are a micrometre |
 
-The pattern is the point: every one of them moves the defect rather than removing it. Which cases
-self-intersect depends on where the grid planes fall against a thin feature, and `larynx small`
-is not special — it is simply where the shipped configuration happens to land it.
+**What shipped.** Refusing those collapses outright would trade one defect for another, because
+reaching the triangle count asked for is the property this decimator was kept for over Manifold's
+`Simplify`. So the guard runs in a first pass, and if that pass runs out of edges short of the
+count a second re-queues what it held back and collapses without it. Where there is slack """+EM+""" the
+smoothing pipeline discards nine triangles in ten """+EM+""" the guard holds and the second pass never
+runs; where there is none, the count still lands. All eleven cases come out at exactly the count
+they did before, Dice against main is unchanged to four decimal places and HD95 to three, and the
+suite costs 17 % more time.
 
-So the fix is the third row done properly: the decimator needs a fold test that consults the
-surface rather than the ring, and the reluctance to collapse across a near-contact has to be a
-cost the priority queue weighs rather than a veto, so the triangle target is still met. That is
-real work in `MeshDecimator`, and it would fix `small test` and the two regressions above at the
-same time. Nothing cheaper held up.
+**Two things that did not work**, both measured, both left out. Finding the contacts by proximity
+""" + EM + """ asking the tree what lies within a collapse's reach """+EM+""" cannot tell a second sheet from the
+same surface curving back on itself; on a bolus, which is nothing but curvature, it pins most of
+the mesh and protects nothing in particular. And widening the skirt from one ring to two or three
+is worse than one: it holds back so much around each contact that the collapses which do run are
+pushed into a different order, and the order is what decides where the surface gets driven
+through itself.
 
-**The offset is also not run-to-run reproducible.** Three runs of `larynx small` at identical
-settings produced 62,810, 62,826 and 62,792 triangles, and four or five coincident pairs. The
-topology verdict was `nonmanifold=0` every time, so the guarantee is robust even though the
-tessellation wobbles; this is Manifold built with the parallel backend, as the shipped win-x64
-binary also is. It means a triangle count or a vertex position is not a safe thing to assert in
-a test.
+**What is still left.** `chin_bolus` keeps two to three crossings at 0.22 to 0.36 mm, against
+none to two before, which on this baseline's spread is a small real cost for `larynx small`'s
+gain. `small test`'s two remain. Both start at contacts the pinch test does not see, because the
+sheets there are near rather than coincident, and closing that gap needs the fold test to consult
+the surface rather than the ring """+EM+""" which is the same non-local check this guard is standing in
+for.
+
+**The offset is not run-to-run reproducible, and that is the thing to fix first.** Three runs of
+`larynx small` at identical settings produced 62,810, 62,826 and 62,792 triangles, and four or
+five coincident pairs; the crossing counts above move the same way. The topology verdict was
+`nonmanifold=0` every time, so that guarantee is robust even though the tessellation wobbles.
+This is Manifold built with the parallel backend, as the shipped win-x64 binary also is.
+
+It means a triangle count or a vertex position is not a safe thing to assert in a test, and that
+every comparison in this area needs repeats rather than a single run. It also means the cheapest
+way to make everything downstream decidable is to make the offset deterministic — a
+single-threaded or order-independent reduction in the level set — because until then each
+attempt at the remaining crossings is being judged against a moving target.
 
 Triangle quality holds up but is not identical. No degenerate triangles on either side in any case.
 On the seven clinical boli the candidate is modestly more faceted — `aspect_ratio_p95` 3.19
@@ -413,23 +441,27 @@ not worth switching to as it stands.
 
 In the order the data argues for:
 
-1. ~~**`Decimate`'s welding step.**~~ Done: `Weld` leaves an already-manifold mesh alone, and
-   `Decimate` eases coincident vertices apart before handing the mesh on.
+1. ~~**`Decimate`'s welding step.**~~ Done: `Weld` leaves an already-manifold mesh alone,
+   `Decimate` eases coincident vertices apart before handing the mesh on, and it no longer
+   collapses across a contact while it has anywhere else to collapse.
 2. **The self-contact in `Offset`.** `larynx small`'s offset surface touches itself, and a finer
    cell does not remove it — measured at the full 1.0 mm rather than the budget's 1.09 mm, the
    coincident pairs are still there. Resolving the contact where it is made is what would clear
    both that case's 13 self-intersections and its excess genus.
-3. **A stronger fold test in `MeshDecimator`**, for `small test`'s two self-intersections. Its
-   `FoldsOver` check is local, so a collapse that flips nothing nearby can still push a triangle
-   through a distant part of the surface. `Decimate` has 1.2–4.7x of headroom against main's
-   `Reducer` to pay for a spatial check with.
-4. **The cell budget's silent coarsening.** A caller asking for 1.0 mm gets 2.25 mm on a 160 mm
+3. **Make the offset reproducible.** Every remaining question here — whether a change helped,
+   which cases regressed — is being asked of a pipeline whose output moves run to run. Fixing
+   that is worth more than any single further heuristic.
+4. **A stronger fold test in `MeshDecimator`**, for what the contact guard does not reach:
+   `chin_bolus`'s two to three crossings and `small test`'s two, which start where sheets are
+   near rather than coincident. `FoldsOver` is local, so a collapse that flips nothing nearby can
+   still push a triangle through a distant part of the surface.
+5. **The cell budget's silent coarsening.** A caller asking for 1.0 mm gets 2.25 mm on a 160 mm
    model with nothing said, and that is where the single 3.43 mm deviation comes from. Reporting
    the cell actually used in `MeshMetadata` would make it visible; raising the budget would make
    it rarer.
-5. **A projection step after decimation**, if the faceting matters. It is the reason the
+6. **A projection step after decimation**, if the faceting matters. It is the reason the
    candidate's area runs 0.04–2.6 % high and its `sharp_edge_fraction` up to 3.5x main's.
-6. **An import floor on stray components**, so an 8-triangle speck does not become a workspace
+7. **An import floor on stray components**, so an 8-triangle speck does not become a workspace
    entry that cannot be smoothed.
 
 ## Suggested thresholds

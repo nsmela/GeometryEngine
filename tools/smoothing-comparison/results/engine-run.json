@@ -21,11 +21,11 @@
       "OutputVertices": 3218,
       "CreatedBy": "GeometryEngine.Modifiers.Decimate",
       "OffsetProducer": "GeometryEngine.Modifiers.Offset (native field)",
-      "ImportMs": 42.6,
-      "DoubleOffsetMs": 1195.4,
-      "InflateMs": 618.9,
-      "DecimateMs": 689.7,
-      "TotalMs": 2551.3
+      "ImportMs": 47.5,
+      "DoubleOffsetMs": 1694.2,
+      "InflateMs": 796.8,
+      "DecimateMs": 905.8,
+      "TotalMs": 3449.9
     },
     {
       "Case": "ear_bolus",
@@ -36,11 +36,11 @@
       "OutputVertices": 2814,
       "CreatedBy": "GeometryEngine.Modifiers.Decimate",
       "OffsetProducer": "GeometryEngine.Modifiers.Offset (native field)",
-      "ImportMs": 43.3,
-      "DoubleOffsetMs": 939.8,
-      "InflateMs": 404.9,
-      "DecimateMs": 347.7,
-      "TotalMs": 1736.2
+      "ImportMs": 12.8,
+      "DoubleOffsetMs": 1138.3,
+      "InflateMs": 459.3,
+      "DecimateMs": 364.4,
+      "TotalMs": 1975.3
     },
     {
       "Case": "eye_bolus",
@@ -51,11 +51,11 @@
       "OutputVertices": 1156,
       "CreatedBy": "GeometryEngine.Modifiers.Decimate",
       "OffsetProducer": "GeometryEngine.Modifiers.Offset (native field)",
-      "ImportMs": 7.6,
-      "DoubleOffsetMs": 375.8,
-      "InflateMs": 166.2,
-      "DecimateMs": 163.4,
-      "TotalMs": 713.1
+      "ImportMs": 21.4,
+      "DoubleOffsetMs": 437.4,
+      "InflateMs": 198.6,
+      "DecimateMs": 247.6,
+      "TotalMs": 905.3
     },
     {
       "Case": "larynx small",
@@ -66,11 +66,11 @@
       "OutputVertices": 2978,
       "CreatedBy": "GeometryEngine.Modifiers.Decimate",
       "OffsetProducer": "GeometryEngine.Modifiers.Offset (native field)",
-      "ImportMs": 21.7,
-      "DoubleOffsetMs": 1094.7,
-      "InflateMs": 588.1,
-      "DecimateMs": 246.3,
-      "TotalMs": 1951.1
+      "ImportMs": 33.5,
+      "DoubleOffsetMs": 1303.5,
+      "InflateMs": 661.2,
+      "DecimateMs": 272.9,
+      "TotalMs": 2271.4
     },
     {
       "Case": "larynx_bolus",
@@ -81,11 +81,11 @@
       "OutputVertices": 10694,
       "CreatedBy": "GeometryEngine.Modifiers.Decimate",
       "OffsetProducer": "GeometryEngine.Modifiers.Offset (native field)",
-      "ImportMs": 29.8,
-      "DoubleOffsetMs": 1221.9,
-      "InflateMs": 598.1,
-      "DecimateMs": 244.5,
-      "TotalMs": 2097
+      "ImportMs": 42.2,
+      "DoubleOffsetMs": 1372.4,
+      "InflateMs": 759.5,
+      "DecimateMs": 308.9,
+      "TotalMs": 2486
     },
     {
       "Case": "nose_bolus",
@@ -96,11 +96,11 @@
       "OutputVertices": 1568,
       "CreatedBy": "GeometryEngine.Modifiers.Decimate",
       "OffsetProducer": "GeometryEngine.Modifiers.Offset (native field)",
-      "ImportMs": 4.4,
-      "DoubleOffsetMs": 480.6,
-      "InflateMs": 236.9,
-      "DecimateMs": 115,
-      "TotalMs": 837
+      "ImportMs": 7,
+      "DoubleOffsetMs": 567,
+      "InflateMs": 268.6,
+      "DecimateMs": 145.6,
+      "TotalMs": 988.3
     },
     {
       "Case": "scalp_bolus",
@@ -111,11 +111,11 @@
       "OutputVertices": 8548,
       "CreatedBy": "GeometryEngine.Modifiers.Decimate",
       "OffsetProducer": "GeometryEngine.Modifiers.Offset (native field)",
-      "ImportMs": 24,
-      "DoubleOffsetMs": 1600.6,
-      "InflateMs": 874.6,
-      "DecimateMs": 389.6,
-      "TotalMs": 2890.6
+      "ImportMs": 32.2,
+      "DoubleOffsetMs": 1751,
+      "InflateMs": 939.1,
+      "DecimateMs": 524.5,
+      "TotalMs": 3248.7
     },
     {
       "Case": "small test",
@@ -126,11 +126,11 @@
       "OutputVertices": 23554,
       "CreatedBy": "GeometryEngine.Modifiers.Decimate",
       "OffsetProducer": "GeometryEngine.Modifiers.Offset (native field)",
-      "ImportMs": 23.7,
-      "DoubleOffsetMs": 935.3,
-      "InflateMs": 403.3,
-      "DecimateMs": 100.8,
-      "TotalMs": 1463.5
+      "ImportMs": 24,
+      "DoubleOffsetMs": 1081.3,
+      "InflateMs": 443.2,
+      "DecimateMs": 109.7,
+      "TotalMs": 1658.8
     },
     {
       "Case": "sphere",
@@ -141,11 +141,11 @@
       "OutputVertices": 9026,
       "CreatedBy": "GeometryEngine.Modifiers.Decimate",
       "OffsetProducer": "GeometryEngine.Modifiers.Offset (native field)",
-      "ImportMs": 6.9,
-      "DoubleOffsetMs": 1319.8,
-      "InflateMs": 838.4,
-      "DecimateMs": 277.4,
-      "TotalMs": 2442.8
+      "ImportMs": 8.6,
+      "DoubleOffsetMs": 1603.5,
+      "InflateMs": 912.2,
+      "DecimateMs": 341.3,
+      "TotalMs": 2865.9
     },
     {
       "Case": "test bolus 107mL",
@@ -156,11 +156,11 @@
       "OutputVertices": 15214,
       "CreatedBy": "GeometryEngine.Modifiers.Decimate",
       "OffsetProducer": "GeometryEngine.Modifiers.Offset (native field)",
-      "ImportMs": 75.6,
-      "DoubleOffsetMs": 1477.6,
-      "InflateMs": 767.4,
-      "DecimateMs": 211.8,
-      "TotalMs": 2532.9
+      "ImportMs": 50.8,
+      "DoubleOffsetMs": 1540.5,
+      "InflateMs": 823.5,
+      "DecimateMs": 261.5,
+      "TotalMs": 2676.8
     },
     {
       "Case": "test bolus 7mm",
@@ -171,11 +171,11 @@
       "OutputVertices": 10596,
       "CreatedBy": "GeometryEngine.Modifiers.Decimate",
       "OffsetProducer": "GeometryEngine.Modifiers.Offset (native field)",
-      "ImportMs": 28.3,
-      "DoubleOffsetMs": 914.2,
-      "InflateMs": 461.7,
-      "DecimateMs": 167.4,
-      "TotalMs": 1572
+      "ImportMs": 37.6,
+      "DoubleOffsetMs": 1043.2,
+      "InflateMs": 524.7,
+      "DecimateMs": 220.1,
+      "TotalMs": 1825.9
     }
   ]
 }
