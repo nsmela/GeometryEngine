@@ -74,12 +74,14 @@ for f in chin_bolus ear_bolus eye_bolus "larynx small" larynx_bolus nose_bolus s
 done
 
 # needs numpy and matplotlib; results/ holds head_to_head.json and the two harness run logs
-python3 tools/smoothing-comparison/make_report.py out smoothing-comparison.pdf
+python3 tools/smoothing-comparison/make_report.py out fabolus-smoothing-comparison.pdf
 ```
 
-The PDF is a build artifact and is not committed: at 200 dpi for the mesh panels it is about
-7 MB, which is most of this repository again. `docs/fabolus-smoothing-main-vs-engine.md` is the
-committed record; the PDF is the illustrated version of it.
+The committed `fabolus-smoothing-comparison.pdf` at the repository root is what that command
+produces. It is large for a generated file — about 7 MB, most of it the mesh panels, which are
+rasterised at 200 dpi because a page of fifty thousand shaded facets left as vector paths is
+three times that and slow to turn. Regenerate it in place rather than committing a second copy
+beside it, and keep `docs/fabolus-smoothing-main-vs-engine.md` as the written record.
 
 Colours are the deviation ramp from `tools/render/make_smoothing_figures.py` — red inside, blue
 outside, near-white coincident — so the two sets of figures can be read together. The two

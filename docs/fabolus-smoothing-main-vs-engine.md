@@ -8,10 +8,10 @@ eleven outputs are not watertight, against none on main. Two of those defects co
 level-set offset and one out of `Decimate`, and a fourth case gains two self-intersections in
 `Decimate`. That is the gap to close before this replaces main.**
 
-Reproduce with `tools/smoothing-comparison` (see its README), which also builds an illustrated
-PDF of this comparison — a page per model with shaded renders of both smoothed meshes, three
-deviation heatmaps and that case's metrics. The PDF is a build artifact and is not committed;
-this document is the record. Run on linux-x64, 4 cores, against a
+Reproduce with `tools/smoothing-comparison` (see its README), which also builds
+`fabolus-smoothing-comparison.pdf` at the repository root: the illustrated version of this
+document, a page per model with shaded renders of both smoothed meshes, three deviation heatmaps
+and that case's metrics. Run on linux-x64, 4 cores, against a
 locally built `libmanifoldc.so.3.5.1` at upstream `7c86359` — the commit the shipped win-x64
 binaries come from — with `geometryengine_native.so` built from this repository's `native/`.
 Both `ManifoldNative.IsAvailable` and `DistanceFieldNative.IsAvailable` were true and every offset
