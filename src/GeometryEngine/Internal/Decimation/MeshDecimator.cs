@@ -21,6 +21,9 @@ internal static class MeshDecimator
 
         if (triangleCount <= targetTriangleCount || targetTriangleCount < 4)
         {
+            // Below the target there is nothing to collapse, but the promise that no two vertices
+            // leave here at one position holds whether or not any work was done.
+            MeshCleanup.SeparateCoincidentVertices(welded, triangles, weldTolerance);
             return MeshCleanup.Compact(welded, triangles);
         }
 
@@ -189,7 +192,14 @@ internal static class MeshDecimator
             }
         }
 
-        return MeshCleanup.Compact(positions, result);
+        // Collapses land on positions a quadric chose, and two of them can land on the same one -
+        // as can a pinch the offset surface arrived with. Either way the mesh leaving here is the
+        // one that gets written out, and a 32-bit file cannot hold two vertices at one position:
+        // the reader welds them, and a manifold surface reaches the slicer with a four-faced edge.
+        var separated = new List<Vec3>(positions);
+        MeshCleanup.SeparateCoincidentVertices(separated, result, weldTolerance);
+
+        return MeshCleanup.Compact(separated, result);
     }
 
     /// <summary>
