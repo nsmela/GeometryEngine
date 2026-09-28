@@ -51,8 +51,14 @@ def shade(normals_cam, base_rgb):
     return rgb
 
 
-def shade_each(normals_cam, face_rgb):
-    """shade(), but with one base colour per facet rather than one for the whole mesh."""
+def shade_each(normals_cam, face_rgb, relief=1.0):
+    """shade(), but with one base colour per facet rather than one for the whole mesh.
+
+    relief scales how far the lighting is allowed to move the base colour, blending the
+    shaded result back towards the flat one. A heatmap wants some relief to read as a
+    surface, but not so much that shadow is mistaken for a lower value: relief below one
+    keeps the colour near the one the legend promises.
+    """
     key = np.array([0.35, 0.45, 0.82])
     key /= np.linalg.norm(key)
     fill = np.array([-0.6, -0.2, 0.4])
@@ -61,13 +67,15 @@ def shade_each(normals_cam, face_rgb):
     lambert = np.clip(normals_cam @ key, 0, 1)
     bounce = np.clip(normals_cam @ fill, 0, 1)
     intensity = 0.30 + 0.62 * lambert + 0.18 * bounce
-    intensity = np.clip(intensity, 0, 1.25)[:, None]
+    intensity = np.clip(intensity, 0, 1.25)
+    intensity = 1.0 + relief * (intensity - 1.0)
+    intensity = intensity[:, None]
 
     return np.clip(np.asarray(face_rgb, dtype=float) * intensity, 0, 1)
 
 
 def render(ax, triangles, azimuth=38, elevation=26, base_rgb=(0.82, 0.55, 0.32), edges=False,
-           face_rgb=None, limits=None):
+           face_rgb=None, limits=None, relief=1.0):
     """Draw a facet soup.
 
     face_rgb, when given, is one (r, g, b) per input facet and replaces base_rgb, so a
@@ -77,6 +85,8 @@ def render(ax, triangles, azimuth=38, elevation=26, base_rgb=(0.82, 0.55, 0.32),
     limits, when given, is the (cx, cy, half) framing to use instead of fitting this mesh,
     so several panels can share one camera and be compared pixel for pixel. render returns
     the framing it used, ready to pass to the next panel.
+
+    relief is passed to shade_each and applies only alongside face_rgb.
     """
     m = view_matrix(azimuth, elevation)
     cam = triangles @ m.T                      # (n, 3, 3) in camera space
@@ -105,7 +115,7 @@ def render(ax, triangles, azimuth=38, elevation=26, base_rgb=(0.82, 0.55, 0.32),
     if tint is not None:
         tint = tint[order]
 
-    colours = shade(normals, base_rgb) if tint is None else shade_each(normals, tint)
+    colours = shade(normals, base_rgb) if tint is None else shade_each(normals, tint, relief)
     polys = cam[:, :, :2]
 
     # Drawing each facet with its own colour as the edge closes the hairline gaps
