@@ -4,9 +4,9 @@
 HD95 0.03–0.23 mm, mean surface separation 0.016–0.069 mm across all eleven inputs, and no case
 where the two surfaces disagree by more than 0.23 mm over 95 % of the surface — and it is slightly
 *closer* to the unsmoothed anatomy than main is. What does not carry over is topology: three of
-eleven outputs are not watertight, against none on main. Two of those defects come out of the
-level-set offset and one out of `Decimate`, and a fourth case gains two self-intersections in
-`Decimate`. That is the gap to close before this replaces main.**
+eleven outputs are not watertight, against none on main, and a fourth gains two
+self-intersections. All four are `Decimate`'s doing — the level-set offset's manifold guarantee
+holds on every case — so the gap to close before this replaces main is one file wide.**
 
 Reproduce with `tools/smoothing-comparison` (see its README), which also builds
 `fabolus-smoothing-comparison.pdf` at the repository root: the illustrated version of this
@@ -199,22 +199,57 @@ repository as a main-produced 2x export, scores Dice 0.975 / HD95 0.27 mm / +3.8
 | other seven | 1 → 1 | 0 → 0 | unchanged | 0 → 0 |
 
 Component counts match everywhere: both pipelines close `larynx_bolus`'s two components into one.
+The edge counts are from this run; because the offset is not reproducible run to run (below),
+`larynx small` has also come out with one and with two.
 
-`--raw-out` writes the offset surface before `Decimate` touches it, which attributes each defect:
+**The level-set mesher is not the culprit, and its guarantee holds.** Asked directly, through
+`Evaluators.ValidateTopology`, the mesh coming out of `Modifiers.Offset` is closed, manifold,
+consistently wound and a single shell on every one of the eleven cases. What it does emit, on
+some of them, is a handful of **coincident vertex pairs**: two distinct indices at the same
+position, where the offset surface touches itself at a point. That is manifold by the
+combinatorial test — every edge still has exactly two faces — and it is a legitimate thing
+for a level set to produce. It is a pinch point geometrically.
 
-- **`chin_bolus` (3 edges) and `larynx_bolus` (1 edge) arrive non-manifold from
-  `Modifiers.Offset`.** The level-set output already carries them and `Decimate` neither adds nor
-  repairs any. A closed solid is what the level-set mesher is supposed to guarantee, so these are
-  worth chasing upstream of the decimator.
-- **`larynx small`'s 3 edges and `small test`'s 2 self-intersections are introduced by
-  `Decimate`.** Both are clean before it. `MeshDecimator` refuses to collapse a boundary edge but
-  applies no manifold link condition and no fold test against the rest of the surface, so a
-  collapse can weld two sheets or push a triangle through one.
-- **`larynx small` is the one case where the offset surface is subtly wrong before decimation
-  too**: it is closed, has no non-manifold edge, and yet has Euler characteristic −5. A closed
-  orientable surface cannot have an odd Euler characteristic, so there is a non-manifold *vertex*
-  the edge test does not see. Main's output for the same input is Euler 0, genus 1 — one handle,
-  which is what the input's own topology implies.
+**`Decimate` is where the pinch becomes a defect.** It welds by position at
+`MeshCleanup.RelativeTolerance`, so it fuses each coincident pair into one vertex, and the edges
+around the fused vertex then carry four faces. The correlation over the cases is exact:
+
+| case | coincident pairs out of `Offset` | non-manifold edges after `Decimate` |
+|---|---:|---:|
+| `chin_bolus` | 2 | 3 |
+| `larynx small` | 5 | 1 (3 in the run tabulated above) |
+| `larynx_bolus` | 1 | 1 |
+| `ear_bolus` | 0 | 0 |
+| `small test` | 0 | 0 |
+
+The STL export does the same thing independently: the writer casts to `float32`, which lands both
+members of a pair on the same bits, and any reader welding on exact coordinates then sees one
+vertex. So the defect reaches a slicer whether or not it went through `Decimate` — which is why it
+is a real defect in the artefact that matters, not a measurement artefact, even though the mesh
+in memory satisfies Manifold's guarantee.
+
+`small test`'s 2 self-intersections are `Decimate`'s too, by a different route: it has no
+coincident pairs and is clean before decimation. `MeshDecimator` refuses to collapse a boundary
+edge but applies no manifold link condition and no fold test against the rest of the surface, so
+a collapse can weld two sheets or push a triangle through one.
+
+The fix belongs in one of two places, and the first is cheaper: weld coincident vertices inside
+`Offset` and split the pinch, so the mesh handed on has no two vertices at one position; or give
+`MeshDecimator` a link condition, so a weld that would leave an edge with four faces is refused.
+Main never shows this because MeshLib's offset does not hand out coincident vertices.
+
+**One case is stranger than the pinch, and unexplained.** `larynx small`'s offset surface is
+closed, has no non-manifold edge, and yet has Euler characteristic −5. A closed orientable
+surface cannot have an odd Euler characteristic, so something beyond a single pinch is going on
+there. Main's output for the same input is Euler 0, genus 1 — one handle, which is what the
+input's own topology implies.
+
+**The offset is also not run-to-run reproducible.** Three runs of `larynx small` at identical
+settings produced 62,810, 62,826 and 62,792 triangles, and four or five coincident pairs. The
+topology verdict was `nonmanifold=0` every time, so the guarantee is robust even though the
+tessellation wobbles; this is Manifold built with the parallel backend, as the shipped win-x64
+binary also is. It means a triangle count or a vertex position is not a safe thing to assert in
+a test.
 
 Triangle quality holds up but is not identical. No degenerate triangles on either side in any case.
 On the seven clinical boli the candidate is modestly more faceted — `aspect_ratio_p95` 3.19
@@ -312,21 +347,24 @@ not worth switching to as it stands.
 
 In the order the data argues for:
 
-1. **The three non-manifold outputs.** Two are the level-set offset's (`chin_bolus`,
-   `larynx_bolus`) and one is `Decimate`'s (`larynx small`), and the offset's `larynx small` result
-   has a non-manifold vertex on top of that. These are the only findings that would stop a bolus
-   printing, and main has none of them.
-2. **A manifold link condition and a fold test in `MeshDecimator`.** It would fix `larynx small`'s
-   three edges and `small test`'s two self-intersections, and it is self-contained work in one file.
-   `Decimate` has 1.2–4.7x of headroom against main's `Reducer` to pay for the extra checks with.
-3. **The cell budget's silent coarsening.** A caller asking for 1.0 mm gets 2.25 mm on a 160 mm
-   model with nothing said, and that is where the single 3.43 mm deviation comes from. Reporting the
-   cell actually used in `MeshMetadata` would make it visible; raising the budget would make it
-   rarer.
-4. **A projection step after decimation**, if the faceting matters. It is the reason the candidate's
-   area runs 0.04–2.6 % high and its `sharp_edge_fraction` up to 3.5x main's.
-5. **An import floor on stray components**, so an 8-triangle speck does not become a workspace entry
-   that cannot be smoothed.
+1. **`Decimate`'s welding step.** It fuses coincident vertex pairs by position without checking
+   that the fusion leaves every edge with two faces, and that single omission accounts for all
+   three non-manifold outputs. A manifold link condition refuses exactly those welds.
+2. **A fold test in `MeshDecimator`**, for `small test`'s two self-intersections, which come from
+   a collapse pushing a triangle through the surface rather than from a weld. Same file, and
+   `Decimate` has 1.2–4.7x of headroom against main's `Reducer` to pay for both checks with.
+3. **Coincident vertices out of `Offset`.** Welding them there instead, and splitting the pinch,
+   would fix the same three cases a stage earlier and also stop the STL export fusing them behind
+   the caller's back. Worth doing as well as the link condition, not instead of it: the exported
+   mesh should not depend on whether `Decimate` ran.
+4. **The cell budget's silent coarsening.** A caller asking for 1.0 mm gets 2.25 mm on a 160 mm
+   model with nothing said, and that is where the single 3.43 mm deviation comes from. Reporting
+   the cell actually used in `MeshMetadata` would make it visible; raising the budget would make
+   it rarer.
+5. **A projection step after decimation**, if the faceting matters. It is the reason the
+   candidate's area runs 0.04–2.6 % high and its `sharp_edge_fraction` up to 3.5x main's.
+6. **An import floor on stray components**, so an 8-triangle speck does not become a workspace
+   entry that cannot be smoothed.
 
 ## Suggested thresholds
 

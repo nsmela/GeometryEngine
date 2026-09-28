@@ -122,14 +122,17 @@ def wrap(fig, body, width_frac, size):
                       for line in lines if line), default=0.0)
         return widest / fig.bbox.width <= width_frac, "\n".join(lines)
 
-    low, best = 8, None
+    # Scan rather than stop at the first budget that fails. textwrap counts characters and this
+    # measures rendered width, and the two do not agree monotonically: one budget can break a
+    # paragraph onto a line of unusually wide glyphs while a larger budget breaks it better. A
+    # loop that broke on the first failure settled a third short of the column every time.
+    best, best_budget = None, 0
     for budget in range(8, 400, 2):
         ok, candidate = fits(budget)
-        if not ok:
-            break
-        low, best = budget, candidate
+        if ok and budget > best_budget:
+            best, best_budget = candidate, budget
 
-    return best if best is not None else fits(low)[1]
+    return best if best is not None else fits(8)[1]
 
 
 def column_height(body, size, linespacing=1.45):
@@ -214,25 +217,28 @@ def summary_page(pdf, batch, summaries, main, engine):
         "target.\n"
         "\n"
         "Against the unsmoothed anatomy the engine is the closer of the two, halving main's "
-        "HD95 on nine of eleven cases, while growing volume slightly more.\n"
+        "HD95 on nine of eleven cases.\n"
         "\n"
         "Topology is the gap: three engine outputs are not watertight against none on main, and "
-        "a fourth gains two self-intersections. That is what to fix before the engine replaces "
-        "main. Runtime is 2.1x main's \u2014 the offsets cost more, the decimation costs less."
+        "a fourth gains two self-intersections. All four are Decimate's doing \u2014 asked "
+        "directly, the level-set offset is closed and manifold on every case, and what it hands "
+        "on is a few coincident vertex pairs that Decimate welds into an edge with four faces.\n"
+        "\n"
+        "Runtime is 2.1x main's: the offsets cost more, the decimation costs less."
     )
 
     for x, w, heading, body in (
-            (COL0, 0.270, "Introduction", intro),
-            (0.355, 0.280, "How this was tested", method),
-            (0.675, 0.275, "Summary", verdict)):
+            (COL0, 0.205, "Introduction", intro),
+            (0.285, 0.265, "How this was tested", method),
+            (0.580, 0.370, "Summary", verdict)):
         text(fig, x, 0.868, heading, size=12.5, weight="bold")
         text(fig, x, 0.840, fitted(fig, body, w, 8.3, 0.840, 0.434, heading), size=8.3,
              linespacing=1.40)
 
     print("   summary column heights: " + ", ".join(
         f"{name} {column_height(wrap(fig, body, w, 8.3), 8.3, 1.40):.3f}"
-        for name, w, body in (("intro", 0.270, intro), ("method", 0.280, method),
-                              ("summary", 0.275, verdict))))
+        for name, w, body in (("intro", 0.205, intro), ("method", 0.265, method),
+                              ("summary", 0.370, verdict))))
 
     rule(fig, 0.420, width=1.3)
     text(fig, COL0, 0.402, "Per-case result", size=12.5, weight="bold")

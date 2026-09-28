@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>topology-probe</AssemblyName>
+    <RootNamespace>Fabolus.SmoothingCompare.Probe</RootNamespace>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <!-- Measurement code, not shipped: the repo-wide warnings-as-errors would fight the harness. -->
+    <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../../src/GeometryEngine/GeometryEngine.csproj" />
+    <ProjectReference Include="../../../src/GeometryEngine.Core/GeometryEngine.Core.csproj" />
+  </ItemGroup>
+</Project>
