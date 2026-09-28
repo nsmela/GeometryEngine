@@ -94,6 +94,33 @@ line inside its column at the size it will be drawn, and `fitted` refuses to dra
 would overrun into what sits below it. Change the prose and the build tells you if it no longer
 fits rather than silently overprinting.
 
+## Two diagnostics
+
+`TopologyProbe` asks the engine about its own meshes at each stage of the pipeline, rather than
+about the STLs it wrote. An STL cannot tell a mesh that was already non-manifold from one a
+position-weld made non-manifold on the way out, and that distinction is what located the weld bug.
+It also counts the coincident vertex pairs any position-weld downstream will fuse.
+
+`IntersectionDepth` measures how far each flagged self-intersection actually penetrates, as the
+furthest a vertex of one triangle lies beyond the other's plane. A count on its own cannot tell a
+surface grazing itself at the weld tolerance from one passing half a millimetre through itself,
+and the two want completely different responses. Do not infer the depth from how far
+`RepairSelfIntersections` moves the surface: that repair silently fails on these, so the surface
+does not move and the inference reads nanometres when the truth is half a millimetre.
+
+```bash
+dotnet build tools/smoothing-comparison/TopologyProbe     -c Release
+dotnet build tools/smoothing-comparison/IntersectionDepth -c Release
+
+dotnet .../topology-probe.dll "$F/larynx small.stl"
+dotnet .../GeometryEngine.Benchmarks.dll out/engine/"larynx small".stl
+```
+
+`IntersectionDepth` is built under the benchmarks' assembly name because the triangle-triangle
+test it measures with is internal to the library, and the point is to measure with the same test
+the evaluator counts with rather than a second opinion. It is O(n²) over the triangles, so it is
+for one mesh at a time, not a suite.
+
 `EngineHarness` has three flags of its own:
 
 - `--pipeline offset-smooth` swaps `DoubleOffset` for `Modifiers.OffsetSmooth`, the closing that

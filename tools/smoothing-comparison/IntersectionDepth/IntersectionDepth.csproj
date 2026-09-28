@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <!--
+      Named for the assembly the library grants InternalsVisibleTo, because the triangle-triangle
+      test this measures with is internal and the whole point is to measure with the same test the
+      evaluator counts with rather than a second opinion.
+    -->
+    <AssemblyName>GeometryEngine.Benchmarks</AssemblyName>
+    <RootNamespace>Fabolus.SmoothingCompare.Depth</RootNamespace>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../../src/GeometryEngine/GeometryEngine.csproj" />
+    <ProjectReference Include="../../../src/GeometryEngine.Core/GeometryEngine.Core.csproj" />
+  </ItemGroup>
+</Project>

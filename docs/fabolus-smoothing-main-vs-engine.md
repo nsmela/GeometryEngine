@@ -6,9 +6,9 @@ where the two surfaces disagree by more than 0.23 mm over 95 % of the surface �
 *closer* to the unsmoothed anatomy than main is. What does not carry over is topology: three of
 eleven outputs were not watertight, against none on main. That has since been **fixed** — the
 level-set offset's manifold guarantee held all along, and `MeshCleanup.Weld` was breaking it
-afterwards — so all eleven are now watertight and manifold with the geometry unmoved. Two cases
-still carry self-intersections, one of them a regression from the fix, and those are what is
-left.**
+afterwards — so all eleven are now watertight and manifold with the geometry unmoved. `larynx small` still
+carries thirteen self-intersections 0.06 to 0.49 mm deep, which is what is left and is not
+cosmetic.**
 
 Reproduce with `tools/smoothing-comparison` (see its README), which also builds
 `fabolus-smoothing-comparison.pdf` at the repository root: the illustrated version of this
@@ -268,7 +268,7 @@ there, and orders below both the grid the surface was meshed on and anything a p
 | watertight | 8 of 11 | **11 of 11** |
 | non-manifold edges | 3, 3 and 1 | **none** |
 | genus | not computable on three cases | computable on all |
-| self-intersections | `small test` 2 | `small test` 2, **`larynx small` 13** |
+| self-intersections | `small test` 2 (micrometres) | `small test` 2, **`larynx small` 13 at 0.06–0.49 mm** |
 | `cand_ref.dice` | — | unchanged to four decimal places on all eleven |
 | default checks passing | 6 of 11 | 8 of 11 |
 
@@ -276,10 +276,39 @@ there, and orders below both the grid the surface was meshed on and anything a p
 touches itself, and easing the sheets apart leaves them crossing rather than meeting: 13
 self-intersections where the fused version reported none. The fused version reported none only
 because the counter skips triangle pairs sharing a vertex index, and fusing the pinch gave them
-one — so this is a defect becoming visible rather than a new one, but it is a real contact and
-it wants resolving in `Offset`, not papering over in the decimator. A closed manifold surface with
-a self-contact is something a slicer can fill by winding number; an edge with four faces is not,
-so the trade is worth taking in the meantime.
+one, so this began as a defect becoming visible rather than a new one.
+
+**They are not cosmetic.** Measured directly, per pair, as the furthest a vertex of one triangle
+lies beyond the other's plane: **0.06 to 0.49 mm, median 0.17 mm**. That is printable thickness,
+not numerical noise, and `main` has none on the same input. Two other cases are flagged and are
+of a different order: `small test`'s two are 0.5 to 1.4 micrometres, and the pinch sites left on
+`chin_bolus` and `larynx_bolus` measure at the weld tolerance. `tools/smoothing-comparison/
+IntersectionDepth` is what draws that distinction, and it exists because inferring the depth
+indirectly — from how far `RepairSelfIntersections` moved the surface — reported nanometres and
+was wrong: that repair silently fails to resolve these, so the surface does not move and the
+measurement says nothing.
+
+### Three ways to remove them, all measured, none shipped
+
+`Decimate` is where they are made: it collapses around the pinches and drives one sheet through
+the other. Its `SatisfiesLinkCondition` and `FoldsOver` both read only the triangles around the
+collapsing edge, so neither can see the sheet it is pushing into.
+
+| tried | `larynx small` | elsewhere |
+|---|---|---|
+| **erode on the grid the dilate used** — one cell for both halves of the closing, rather than each picking its own from its own bounds | genus 2 → 1, crossings 13 → 1 | **worse**: `larynx_bolus` gains 6 crossings to 1.39 mm, `test bolus 7mm` 7 to 0.50 mm |
+| **honour the requested cell** — budget raised from 400 k to 5 M so 1.0 mm survives everywhere | genus 1, **0 crossings** | **worse**: `chin_bolus` gains 2 to 0.36 mm, `test bolus 7mm` 2 to 0.52 mm; 2.5x runtime; several cases move further from main |
+| **pin vertices near another sheet** so the decimator leaves them alone | **0 real crossings** across the whole suite | breaks the guarantee that `Decimate` reaches the count it was asked for |
+
+The pattern is the point: every one of them moves the defect rather than removing it. Which cases
+self-intersect depends on where the grid planes fall against a thin feature, and `larynx small`
+is not special — it is simply where the shipped configuration happens to land it.
+
+So the fix is the third row done properly: the decimator needs a fold test that consults the
+surface rather than the ring, and the reluctance to collapse across a near-contact has to be a
+cost the priority queue weighs rather than a veto, so the triangle target is still met. That is
+real work in `MeshDecimator`, and it would fix `small test` and the two regressions above at the
+same time. Nothing cheaper held up.
 
 **The offset is also not run-to-run reproducible.** Three runs of `larynx small` at identical
 settings produced 62,810, 62,826 and 62,792 triangles, and four or five coincident pairs. The
