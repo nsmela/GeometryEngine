@@ -65,14 +65,6 @@ internal static class MeshDecimator
             quadrics[triangles[(t * 3) + 2]] += quadric;
         }
 
-        var edgeUse = new Dictionary<(int, int), int>();
-        for (var t = 0; t < triangleCount; t++)
-        {
-            AddEdgeUse(edgeUse, triangles[t * 3], triangles[(t * 3) + 1]);
-            AddEdgeUse(edgeUse, triangles[(t * 3) + 1], triangles[(t * 3) + 2]);
-            AddEdgeUse(edgeUse, triangles[(t * 3) + 2], triangles[t * 3]);
-        }
-
         // Every collapse moves a vertex and changes its quadric, which re-prices every edge around
         // it. The queue cannot re-prioritise in place, so each entry carries the versions of its
         // endpoints at the time it was priced, and an entry whose endpoints have moved since is
@@ -81,22 +73,67 @@ internal static class MeshDecimator
         // priced before its endpoint was merged would otherwise collapse at the old, cheaper cost,
         // which is how a decimated bolus loses a sixth of its volume.
         var versions = new int[positions.Length];
-        var queue = new PriorityQueue<(int A, int B, int VersionA, int VersionB), double>();
-        foreach (var (edge, uses) in edgeUse)
-        {
-            // A boundary edge is never collapsed, so an open mesh keeps its rim.
-            if (uses != 1)
-            {
-                queue.Enqueue((edge.Item1, edge.Item2, 0, 0), CollapseCost(quadrics, positions, edge.Item1, edge.Item2));
-            }
-        }
-
         var trianglesPerVertex = BuildVertexTriangles(triangles, positions.Length);
         Func<int, int> find = Find;
 
         var live = triangleCount;
-        while (live > targetTriangleCount && queue.Count > 0)
+
+        PriorityQueue<(int A, int B, int VersionA, int VersionB), double> Queue()
         {
+            var uses = new Dictionary<(int, int), int>();
+            for (var t = 0; t < triangleCount; t++)
+            {
+                if (!alive[t])
+                {
+                    continue;
+                }
+
+                var a = Find(triangles[t * 3]);
+                var b = Find(triangles[(t * 3) + 1]);
+                var c = Find(triangles[(t * 3) + 2]);
+                AddEdgeUse(uses, a, b);
+                AddEdgeUse(uses, b, c);
+                AddEdgeUse(uses, c, a);
+            }
+
+            var built = new PriorityQueue<(int A, int B, int VersionA, int VersionB), double>();
+            foreach (var (edge, count) in uses)
+            {
+                // A boundary edge is never collapsed, so an open mesh keeps its rim.
+                if (count != 1)
+                {
+                    built.Enqueue(
+                        (edge.Item1, edge.Item2, versions[edge.Item1], versions[edge.Item2]),
+                        CollapseCost(quadrics, positions, edge.Item1, edge.Item2));
+                }
+            }
+
+            return built;
+        }
+
+        // Two passes, and the second is what keeps the promise this decimator exists for.
+        //
+        // The first refuses to collapse anything touching a place where the surface meets itself.
+        // Collapsing there is what drives one sheet through the other: the link condition and the
+        // fold test both read only the triangles around the collapsing edge, so neither can see
+        // the sheet it is pushing into, and on `larynx small` that put thirteen crossings up to
+        // half a millimetre deep into a mesh main had none in.
+        //
+        // Refusing outright would trade one defect for another, because reaching the triangle
+        // count asked for is the property this decimator was kept for over Manifold's Simplify.
+        // So if the first pass runs out of edges before reaching the count, the second re-queues
+        // what it held back and collapses without the guard. Where there is slack - the smoothing
+        // pipeline discards nine triangles in ten - the guard holds and the second pass never
+        // runs. Where there is none, the count still lands.
+        var guarded = PinnedAtSelfContact(positions, triangles, trianglesPerVertex, weldTolerance);
+
+        for (var pass = 0; pass < 2 && live > targetTriangleCount; pass++)
+        {
+            var guarding = pass == 0;
+            var queue = Queue();
+
+            while (live > targetTriangleCount && queue.Count > 0)
+            {
             var (a, b, versionA, versionB) = queue.Dequeue();
 
             // An endpoint merged away, or moved, since this entry was priced.
@@ -109,6 +146,11 @@ internal static class MeshDecimator
             var rootB = b;
 
             if (!SatisfiesLinkCondition(triangles, alive, trianglesPerVertex, find, rootA, rootB))
+            {
+                continue;
+            }
+
+            if (guarding && (guarded[rootA] || guarded[rootB]))
             {
                 continue;
             }
@@ -171,6 +213,7 @@ internal static class MeshDecimator
                     (rootA, neighbour, versions[rootA], versions[neighbour]),
                     CollapseCost(quadrics, positions, rootA, neighbour));
             }
+            }
         }
 
         var result = new List<int>(live * 3);
@@ -200,6 +243,76 @@ internal static class MeshDecimator
         MeshCleanup.SeparateCoincidentVertices(separated, result, weldTolerance);
 
         return MeshCleanup.Compact(separated, result);
+    }
+
+    /// <summary>
+    /// The vertices where the surface meets itself, and their immediate neighbours.
+    ///
+    /// A level-set offset emits these as *pinches*: two distinct vertices at one position, where
+    /// two sheets touch at a point. Collapse next to one and the sheets are driven through each
+    /// other - the link condition and the fold test both read only the triangles around the
+    /// collapsing edge, so neither can see the sheet it is pushing into. On `larynx small` that
+    /// put ten to sixteen crossings, a twentieth to half a millimetre deep, into a mesh main had
+    /// none in.
+    ///
+    /// Found by the same grouping a weld would do, so what counts as one position here is what
+    /// counts as one position everywhere else. Deliberately not a proximity search: distance
+    /// alone cannot tell a second sheet from the same surface curving back on itself, and on a
+    /// bolus - which is nothing but curvature - asking the tree what lies within a collapse's
+    /// reach pins most of the mesh and protects nothing in particular.
+    ///
+    /// The one-ring goes in too, because the vertex driven through the other sheet is often not
+    /// the pinched one but its neighbour, collapsing towards it.
+    /// </summary>
+    private static bool[] PinnedAtSelfContact(
+        Vec3[] positions, List<int> triangles, List<int>[] trianglesPerVertex, double tolerance)
+    {
+        var welder = new Csg.VertexWelder(tolerance);
+        var firstAt = new Dictionary<int, int>();
+        var contact = new bool[positions.Length];
+        var any = false;
+
+        for (var v = 0; v < positions.Length; v++)
+        {
+            var group = welder.AddOrGet(positions[v]);
+            if (firstAt.TryGetValue(group, out var other))
+            {
+                contact[v] = true;
+                contact[other] = true;
+                any = true;
+            }
+            else
+            {
+                firstAt[group] = v;
+            }
+        }
+
+        if (!any)
+        {
+            return contact;
+        }
+
+        // One ring, measured: two and three are worse. A wider skirt holds back so much around
+        // each contact that the collapses which do run are pushed into a different order, and the
+        // order is what decides where the surface gets driven through itself.
+        var pinned = (bool[])contact.Clone();
+        for (var v = 0; v < positions.Length; v++)
+        {
+            if (!contact[v])
+            {
+                continue;
+            }
+
+            foreach (var t in trianglesPerVertex[v])
+            {
+                for (var c = 0; c < 3; c++)
+                {
+                    pinned[triangles[(t * 3) + c]] = true;
+                }
+            }
+        }
+
+        return pinned;
     }
 
     /// <summary>
