@@ -4,9 +4,11 @@
 HD95 0.03–0.23 mm, mean surface separation 0.016–0.069 mm across all eleven inputs, and no case
 where the two surfaces disagree by more than 0.23 mm over 95 % of the surface — and it is slightly
 *closer* to the unsmoothed anatomy than main is. What does not carry over is topology: three of
-eleven outputs are not watertight, against none on main, and a fourth gains two
-self-intersections. All four are `Decimate`'s doing — the level-set offset's manifold guarantee
-holds on every case — so the gap to close before this replaces main is one file wide.**
+eleven outputs were not watertight, against none on main. That has since been **fixed** — the
+level-set offset's manifold guarantee held all along, and `MeshCleanup.Weld` was breaking it
+afterwards — so all eleven are now watertight and manifold with the geometry unmoved. Two cases
+still carry self-intersections, one of them a regression from the fix, and those are what is
+left.**
 
 Reproduce with `tools/smoothing-comparison` (see its README), which also builds
 `fabolus-smoothing-comparison.pdf` at the repository root: the illustrated version of this
@@ -188,7 +190,10 @@ The earlier chat's baseline stands up as a sanity check: `ear_bolus_smoothed.stl
 repository as a main-produced 2x export, scores Dice 0.975 / HD95 0.27 mm / +3.8 % volume against
 `ear_bolus.stl`, and this run's `ear_bolus` reference scores 0.9747 / 0.273 / +3.80 %.
 
-### Topology: the real gap
+### Topology: the gap, and how it was closed
+
+As first measured, before the fix described below. Every figure in the rest of this document is
+from that same run, and the geometry is unaffected by the fix, so they all still stand.
 
 | case | watertight | non-manifold edges | genus | self-intersections |
 |---|:--|:--|:--|:--|
@@ -243,6 +248,38 @@ closed, has no non-manifold edge, and yet has Euler characteristic −5. A close
 surface cannot have an odd Euler characteristic, so something beyond a single pinch is going on
 there. Main's output for the same input is Euler 0, genus 1 — one handle, which is what the
 input's own topology implies.
+
+### The fix, and what it left behind
+
+`Weld` now returns an already edge-manifold mesh untouched. Such a mesh carries its topology in
+its indices, so a weld has nothing to recover there and something to destroy; a triangle soup out
+of an STL, where every edge starts with one face, is nowhere near manifold and takes the path it
+always did.
+
+That alone does not reach the file. A 32-bit STL has no indices, and the reader recovers topology
+by welding on position, so it fuses the pair right back. `Decimate` therefore also eases
+coincident vertices apart before handing the mesh on, each moved a hair towards the middle of its
+own neighbours and so along its own sheet. The step is four weld tolerances — about a
+ten-thousandth of a millimetre on a bolus, several times what a 32-bit float can still tell apart
+there, and orders below both the grid the surface was meshed on and anything a printer resolves.
+
+| | before | after |
+|---|---|---|
+| watertight | 8 of 11 | **11 of 11** |
+| non-manifold edges | 3, 3 and 1 | **none** |
+| genus | not computable on three cases | computable on all |
+| self-intersections | `small test` 2 | `small test` 2, **`larynx small` 13** |
+| `cand_ref.dice` | — | unchanged to four decimal places on all eleven |
+| default checks passing | 6 of 11 | 8 of 11 |
+
+**One case got worse, and is the honest remainder.** `larynx small`'s offset surface genuinely
+touches itself, and easing the sheets apart leaves them crossing rather than meeting: 13
+self-intersections where the fused version reported none. The fused version reported none only
+because the counter skips triangle pairs sharing a vertex index, and fusing the pinch gave them
+one — so this is a defect becoming visible rather than a new one, but it is a real contact and
+it wants resolving in `Offset`, not papering over in the decimator. A closed manifold surface with
+a self-contact is something a slicer can fill by winding number; an edge with four faces is not,
+so the trade is worth taking in the meantime.
 
 **The offset is also not run-to-run reproducible.** Three runs of `larynx small` at identical
 settings produced 62,810, 62,826 and 62,792 triangles, and four or five coincident pairs. The
@@ -347,16 +384,16 @@ not worth switching to as it stands.
 
 In the order the data argues for:
 
-1. **`Decimate`'s welding step.** It fuses coincident vertex pairs by position without checking
-   that the fusion leaves every edge with two faces, and that single omission accounts for all
-   three non-manifold outputs. A manifold link condition refuses exactly those welds.
-2. **A fold test in `MeshDecimator`**, for `small test`'s two self-intersections, which come from
-   a collapse pushing a triangle through the surface rather than from a weld. Same file, and
-   `Decimate` has 1.2–4.7x of headroom against main's `Reducer` to pay for both checks with.
-3. **Coincident vertices out of `Offset`.** Welding them there instead, and splitting the pinch,
-   would fix the same three cases a stage earlier and also stop the STL export fusing them behind
-   the caller's back. Worth doing as well as the link condition, not instead of it: the exported
-   mesh should not depend on whether `Decimate` ran.
+1. ~~**`Decimate`'s welding step.**~~ Done: `Weld` leaves an already-manifold mesh alone, and
+   `Decimate` eases coincident vertices apart before handing the mesh on.
+2. **The self-contact in `Offset`.** `larynx small`'s offset surface touches itself, and a finer
+   cell does not remove it — measured at the full 1.0 mm rather than the budget's 1.09 mm, the
+   coincident pairs are still there. Resolving the contact where it is made is what would clear
+   both that case's 13 self-intersections and its excess genus.
+3. **A stronger fold test in `MeshDecimator`**, for `small test`'s two self-intersections. Its
+   `FoldsOver` check is local, so a collapse that flips nothing nearby can still push a triangle
+   through a distant part of the surface. `Decimate` has 1.2–4.7x of headroom against main's
+   `Reducer` to pay for a spatial check with.
 4. **The cell budget's silent coarsening.** A caller asking for 1.0 mm gets 2.25 mm on a 160 mm
    model with nothing said, and that is where the single 3.43 mm deviation comes from. Reporting
    the cell actually used in `MeshMetadata` would make it visible; raising the budget would make
