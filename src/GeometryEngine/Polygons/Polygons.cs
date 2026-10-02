@@ -341,23 +341,25 @@ internal sealed class SliceHandler
             return node;
         }
 
+        // A triangle whose corners sit all on one side crosses nothing, and is most of any mesh:
+        // it is passed over before anything is allocated or looked up for it.
+        Span<int> crossings = stackalloc int[3];
         for (var t = 0; t < mesh.TriangleCount; t++)
         {
             var (a, b, c) = mesh.TriangleAt(t);
-            var corners = new[] { a, b, c };
-
-            var crossings = new List<int>(2);
-            for (var i = 0; i < 3; i++)
+            var (aboveA, aboveB, aboveC) = (a.Z > height, b.Z > height, c.Z > height);
+            if (aboveA == aboveB && aboveB == aboveC)
             {
-                var p = corners[i];
-                var q = corners[(i + 1) % 3];
-                if ((p.Z > height) != (q.Z > height))
-                {
-                    crossings.Add(Node(p, q));
-                }
+                continue;
             }
 
-            if (crossings.Count != 2 || crossings[0] == crossings[1])
+            // Edges in the order a-b, b-c, c-a, as each crossing has always been found.
+            var count = 0;
+            if (aboveA != aboveB) { crossings[count++] = Node(a, b); }
+            if (aboveB != aboveC) { crossings[count++] = Node(b, c); }
+            if (aboveC != aboveA) { crossings[count++] = Node(c, a); }
+
+            if (count != 2 || crossings[0] == crossings[1])
             {
                 continue;
             }

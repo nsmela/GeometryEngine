@@ -71,16 +71,20 @@ internal static class CreaseSmoother
         }
 
         // Measured against the positions as they arrived, not against the previous pass, so the
-        // bound cannot drift outwards one pass at a time.
-        var anchors = mesh.Vertices.ToArray();
+        // bound cannot drift outwards one pass at a time. The mesh's own array cannot change, so
+        // it is read directly rather than copied.
+        var anchors = mesh.Vertices;
 
         var mu = 1.0 / (PassBand - (1.0 / strength));
         var buffer = new Vec3[positions.Length];
 
         for (var i = 0; i < iterations; i++)
         {
+            // Each pass writes every vertex into the other buffer; the two trade places.
             Pass(positions, buffer, start, neighbours, movable, strength, anchors, maxDeviation);
+            (positions, buffer) = (buffer, positions);
             Pass(positions, buffer, start, neighbours, movable, mu, anchors, maxDeviation);
+            (positions, buffer) = (buffer, positions);
         }
 
         return new Smoothed([.. positions], triangles, creaseEdges, moved);
@@ -100,7 +104,7 @@ internal static class CreaseSmoother
         int[] neighbours,
         bool[] movable,
         double factor,
-        Vec3[] anchors,
+        ImmutableArray<Vec3> anchors,
         double maxDeviation)
     {
         for (var v = 0; v < positions.Length; v++)
@@ -124,7 +128,6 @@ internal static class CreaseSmoother
             buffer[v] = Clamped(positions[v] + ((centroid - positions[v]) * factor), anchors[v], maxDeviation);
         }
 
-        Array.Copy(buffer, positions, positions.Length);
     }
 
     /// <summary>

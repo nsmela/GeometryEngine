@@ -311,17 +311,22 @@ internal static class PlyFormat
             }
             else if (parts.Length >= 5 && parts[0] == "property" && parts[1] == "list" && elements.Count > 0)
             {
-                elements[^1].Properties.Add(new Property(parts[4], parts[3], parts[2]));
+                elements[^1].Properties.Add(new Property(parts[4], parts[3].ToLowerInvariant(), parts[2].ToLowerInvariant()));
             }
             else if (parts.Length >= 3 && parts[0] == "property" && elements.Count > 0)
             {
-                elements[^1].Properties.Add(new Property(parts[2], parts[1], null));
+                elements[^1].Properties.Add(new Property(parts[2], parts[1].ToLowerInvariant(), null));
             }
         }
 
         var body = bytes[headerLength..];
         var vertices = new List<Vec3>();
         var triangles = new List<int>();
+
+        // One element's values at a time, cleared between elements: Collect copies out what it
+        // keeps, so a fresh dictionary and list per vertex and per face bought nothing.
+        var values = new Dictionary<string, double>();
+        var list = new List<int>();
 
         if (ascii)
         {
@@ -331,8 +336,8 @@ internal static class PlyFormat
             {
                 for (var item = 0; item < element.Count; item++)
                 {
-                    var values = new Dictionary<string, double>();
-                    var list = new List<int>();
+                    values.Clear();
+                    list.Clear();
                     foreach (var property in element.Properties)
                     {
                         if (property.CountType is null)
@@ -359,8 +364,8 @@ internal static class PlyFormat
             {
                 for (var item = 0; item < element.Count; item++)
                 {
-                    var values = new Dictionary<string, double>();
-                    var list = new List<int>();
+                    values.Clear();
+                    list.Clear();
                     foreach (var property in element.Properties)
                     {
                         if (property.CountType is null)
@@ -453,10 +458,11 @@ internal static class PlyFormat
         return end;
     }
 
+    /// <param name="type">A property type, already lower-cased when the header was read.</param>
     private static double ReadScalar(ReadOnlySpan<byte> body, ref int cursor, string type)
     {
         double value;
-        switch (type.ToLowerInvariant())
+        switch (type)
         {
             case "char" or "int8":
                 value = (sbyte)body[cursor];

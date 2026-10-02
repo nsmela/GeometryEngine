@@ -1,3 +1,4 @@
+using System.Runtime.InteropServices;
 using GeometryEngine.Internal.Native;
 using GeometryEngine.Internal.Spatial;
 
@@ -137,13 +138,13 @@ internal sealed class SpatialIndex : ISpatialIndex
 
             if (status == (int)DistanceFieldStatus.Ok)
             {
-                return ImmutableArray.Create(results);
+                return ImmutableCollectionsMarshal.AsImmutableArray(results);
             }
         }
 
         var managed = new double[points.Length];
         Parallel.For(0, points.Length, i => managed[i] = _bvh.SignedDistance(points[i]));
-        return ImmutableArray.Create(managed);
+        return ImmutableCollectionsMarshal.AsImmutableArray(managed);
     }
 
     /// <summary>

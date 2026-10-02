@@ -125,9 +125,27 @@ internal static class DistanceFieldNative
 /// Owns a native field. A <see cref="SafeHandle"/> rather than a bare pointer, so a field whose
 /// owner is never disposed is still freed by the finalizer, and a query in flight keeps the
 /// handle alive past a concurrent dispose.
+///
+/// The field is reported to the GC as memory pressure for as long as it lives. A mesh keeps its
+/// index - and so this field - until the mesh itself is collected, and the shared index it is
+/// reached through deliberately ignores Dispose; without the report, the GC sees a few dozen
+/// managed bytes standing for megabytes of native tree, and an editing session producing a
+/// new mesh per step can pile fields up between collections it has no reason to run.
 /// </summary>
 internal sealed class DistanceFieldHandle : SafeHandle
 {
+    /// <summary>
+    /// Native bytes per triangle, estimated: libigl's AABB tree holds about two boxed nodes per
+    /// triangle, and the fast winding number BVH a node and an expansion per triangle again, on
+    /// top of the copied faces. An estimate is all the GC needs; it schedules, it does not account.
+    /// </summary>
+    private const long BytesPerTriangle = 400;
+
+    /// <summary>The copied vertex positions, three doubles each.</summary>
+    private const long BytesPerVertex = 24;
+
+    private long _pressure;
+
     public DistanceFieldHandle()
         : base(IntPtr.Zero, ownsHandle: true)
     {
@@ -148,14 +166,19 @@ internal sealed class DistanceFieldHandle : SafeHandle
             return null;
         }
 
-        var owned = new DistanceFieldHandle();
+        var owned = new DistanceFieldHandle
+        {
+            _pressure = (mesh.TriangleCount * BytesPerTriangle) + (mesh.VertexCount * BytesPerVertex),
+        };
         owned.SetHandle(raw);
+        GC.AddMemoryPressure(owned._pressure);
         return owned;
     }
 
     protected override bool ReleaseHandle()
     {
         DistanceFieldNative.ge_field_destroy(handle);
+        GC.RemoveMemoryPressure(_pressure);
         return true;
     }
 }

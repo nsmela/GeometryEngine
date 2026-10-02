@@ -32,6 +32,15 @@ internal readonly record struct ManifoldOutcome(IMesh Mesh, ManifoldProvenance P
 /// value, and a P/Invoke breaks that contract loudly: a missing or mismatched native binary
 /// raises <see cref="DllNotFoundException"/> or <see cref="EntryPointNotFoundException"/>
 /// from the first call, which would otherwise tear down the caller rather than be reported.
+///
+/// Every native object is made in two steps: <c>manifold_alloc_*</c> reserves raw memory, and a
+/// constructing call builds the object in it and returns that same pointer. A handle is only
+/// ever taken from the constructing call's return value, never from the allocation. P/Invokes
+/// bind lazily, so a binary missing a newer export throws from the constructing call itself;
+/// taking the handle from the allocation would then send unconstructed memory through a
+/// destructor in the cleanup below, which is a crash rather than the binding-mismatch failure
+/// this class promises. The cost of the safe order is the few bytes of the raw allocation,
+/// leaked only on that failure.
 /// </summary>
 internal static unsafe class ManifoldKernel
 {
@@ -69,15 +78,13 @@ internal static unsafe class ManifoldKernel
                     merged |= operand.Value.Merged;
                 }
 
-                vector = ManifoldNative.manifold_alloc_manifold_vec();
-                ManifoldNative.manifold_manifold_empty_vec(vector);
+                vector = ManifoldNative.manifold_manifold_empty_vec(ManifoldNative.manifold_alloc_manifold_vec());
                 foreach (var operand in operands)
                 {
                     ManifoldNative.manifold_manifold_vec_push_back(vector, operand);
                 }
 
-                result = ManifoldNative.manifold_alloc_manifold();
-                ManifoldNative.manifold_batch_boolean(result, vector, op);
+                result = ManifoldNative.manifold_batch_boolean(ManifoldNative.manifold_alloc_manifold(), vector, op);
 
                 var status = ManifoldNative.manifold_status(result);
                 if (status != ManifoldError.NoError)
@@ -133,11 +140,16 @@ internal static unsafe class ManifoldKernel
             var back = IntPtr.Zero;
             try
             {
-                front = ManifoldNative.manifold_alloc_manifold();
-                back = ManifoldNative.manifold_alloc_manifold();
-
                 var n = plane.Normal.Vector;
-                ManifoldNative.manifold_split_by_plane(front, back, operand.Value.Handle, n.X, n.Y, n.Z, plane.Offset);
+                var halves = ManifoldNative.manifold_split_by_plane(
+                    ManifoldNative.manifold_alloc_manifold(),
+                    ManifoldNative.manifold_alloc_manifold(),
+                    operand.Value.Handle,
+                    n.X,
+                    n.Y,
+                    n.Z,
+                    plane.Offset);
+                (front, back) = (halves.First, halves.Second);
 
                 foreach (var half in new[] { front, back })
                 {
@@ -207,8 +219,8 @@ internal static unsafe class ManifoldKernel
             var refined = IntPtr.Zero;
             try
             {
-                normals = ManifoldNative.manifold_alloc_manifold();
-                ManifoldNative.manifold_calculate_normals(normals, operand.Value.Handle, 0, keepSharperThan);
+                normals = ManifoldNative.manifold_calculate_normals(
+                    ManifoldNative.manifold_alloc_manifold(), operand.Value.Handle, 0, keepSharperThan);
 
                 var status = ManifoldNative.manifold_status(normals);
                 if (status != ManifoldError.NoError)
@@ -216,8 +228,7 @@ internal static unsafe class ManifoldKernel
                     return Result.Failure<ManifoldOutcome>(ManifoldErrors.OperationFailed(status));
                 }
 
-                tangents = ManifoldNative.manifold_alloc_manifold();
-                ManifoldNative.manifold_smooth_by_normals(tangents, normals, 0);
+                tangents = ManifoldNative.manifold_smooth_by_normals(ManifoldNative.manifold_alloc_manifold(), normals, 0);
 
                 status = ManifoldNative.manifold_status(tangents);
                 if (status != ManifoldError.NoError)
@@ -227,8 +238,7 @@ internal static unsafe class ManifoldKernel
 
                 // Nothing has moved yet: the two calls above only recorded normals and tangents.
                 // This is the one that interpolates, and so the one that changes the shape.
-                refined = ManifoldNative.manifold_alloc_manifold();
-                ManifoldNative.manifold_refine_to_tolerance(refined, tangents, tolerance);
+                refined = ManifoldNative.manifold_refine_to_tolerance(ManifoldNative.manifold_alloc_manifold(), tangents, tolerance);
 
                 status = ManifoldNative.manifold_status(refined);
                 if (status != ManifoldError.NoError)
@@ -285,8 +295,7 @@ internal static unsafe class ManifoldKernel
             var simplified = IntPtr.Zero;
             try
             {
-                simplified = ManifoldNative.manifold_alloc_manifold();
-                ManifoldNative.manifold_simplify(simplified, operand.Value.Handle, tolerance);
+                simplified = ManifoldNative.manifold_simplify(ManifoldNative.manifold_alloc_manifold(), operand.Value.Handle, tolerance);
 
                 var status = ManifoldNative.manifold_status(simplified);
                 if (status != ManifoldError.NoError)
@@ -338,14 +347,14 @@ internal static unsafe class ManifoldKernel
             // handed over negated: positive inside the solid.
             ManifoldNative.SdfCallback callback = (x, y, z, _) => -signedDistance(new Vec3(x, y, z));
 
-            var box = ManifoldNative.manifold_alloc_box();
+            var box = IntPtr.Zero;
             var solid = IntPtr.Zero;
             try
             {
-                ManifoldNative.manifold_box(box, min.X, min.Y, min.Z, max.X, max.Y, max.Z);
+                box = ManifoldNative.manifold_box(ManifoldNative.manifold_alloc_box(), min.X, min.Y, min.Z, max.X, max.Y, max.Z);
 
-                solid = ManifoldNative.manifold_alloc_manifold();
-                ManifoldNative.manifold_level_set(solid, callback, box, edgeLength, -level, 0, IntPtr.Zero);
+                solid = ManifoldNative.manifold_level_set(
+                    ManifoldNative.manifold_alloc_manifold(), callback, box, edgeLength, -level, 0, IntPtr.Zero);
 
                 // The delegate must outlive the native call; without this the JIT is free to
                 // collect it while Manifold is still sampling through it.
@@ -368,7 +377,10 @@ internal static unsafe class ManifoldKernel
                     ManifoldNative.manifold_delete_manifold(solid);
                 }
 
-                ManifoldNative.manifold_delete_box(box);
+                if (box != IntPtr.Zero)
+                {
+                    ManifoldNative.manifold_delete_box(box);
+                }
             }
         });
 
@@ -404,13 +416,11 @@ internal static unsafe class ManifoldKernel
                         points[i] = new ManifoldNative.NativeVec2 { X = contour[i].X, Y = contour[i].Y };
                     }
 
-                    var polygon = ManifoldNative.manifold_alloc_simple_polygon();
                     fixed (ManifoldNative.NativeVec2* pPoints = points)
                     {
-                        ManifoldNative.manifold_simple_polygon(polygon, pPoints, (nuint)points.Length);
+                        simplePolygons.Add(ManifoldNative.manifold_simple_polygon(
+                            ManifoldNative.manifold_alloc_simple_polygon(), pPoints, (nuint)points.Length));
                     }
-
-                    simplePolygons.Add(polygon);
                 }
 
                 if (simplePolygons.Count == 0)
@@ -419,14 +429,12 @@ internal static unsafe class ManifoldKernel
                 }
 
                 var handles = simplePolygons.ToArray();
-                polygons = ManifoldNative.manifold_alloc_polygons();
                 fixed (IntPtr* pHandles = handles)
                 {
-                    ManifoldNative.manifold_polygons(polygons, pHandles, (nuint)handles.Length);
+                    polygons = ManifoldNative.manifold_polygons(ManifoldNative.manifold_alloc_polygons(), pHandles, (nuint)handles.Length);
                 }
 
-                extruded = ManifoldNative.manifold_alloc_manifold();
-                ManifoldNative.manifold_extrude(extruded, polygons, zMax - zMin, 0, 0, 1, 1);
+                extruded = ManifoldNative.manifold_extrude(ManifoldNative.manifold_alloc_manifold(), polygons, zMax - zMin, 0, 0, 1, 1);
 
                 var status = ManifoldNative.manifold_status(extruded);
                 if (status != ManifoldError.NoError)
@@ -440,8 +448,7 @@ internal static unsafe class ManifoldKernel
                 }
 
                 // Extrusion always starts at z = 0; lift it onto the requested range.
-                placed = ManifoldNative.manifold_alloc_manifold();
-                ManifoldNative.manifold_translate(placed, extruded, 0, 0, zMin);
+                placed = ManifoldNative.manifold_translate(ManifoldNative.manifold_alloc_manifold(), extruded, 0, 0, zMin);
 
                 return FromManifold(placed, metadata);
             }
@@ -531,31 +538,35 @@ internal static unsafe class ManifoldKernel
         MeshMetadata metadata,
         NativeBooleanOp op)
     {
-        var leftManifoldResult = ToManifold(left);
-        if (leftManifoldResult.IsFailure)
-        {
-            return Result.Failure<ManifoldOutcome>(leftManifoldResult.Error);
-        }
-
-        var rightManifoldResult = ToManifold(right);
-        if (rightManifoldResult.IsFailure)
-        {
-            ManifoldNative.manifold_delete_manifold(leftManifoldResult.Value.Handle);
-            return Result.Failure<ManifoldOutcome>(rightManifoldResult.Error);
-        }
-
-        var leftPtr = leftManifoldResult.Value.Handle;
-        var rightPtr = rightManifoldResult.Value.Handle;
+        var leftPtr = IntPtr.Zero;
+        var rightPtr = IntPtr.Zero;
         var resultPtr = IntPtr.Zero;
 
-        var provenance = leftManifoldResult.Value.Merged || rightManifoldResult.Value.Merged
-            ? ManifoldProvenance.NativeAfterMergingOperands
-            : ManifoldProvenance.Native;
-
+        // Every handle is owned by the finally from the moment it exists, so a P/Invoke that
+        // throws part way through - converting the right operand, say - cannot strand the left.
         try
         {
-            resultPtr = ManifoldNative.manifold_alloc_manifold();
-            op(resultPtr, leftPtr, rightPtr);
+            var leftManifoldResult = ToManifold(left);
+            if (leftManifoldResult.IsFailure)
+            {
+                return Result.Failure<ManifoldOutcome>(leftManifoldResult.Error);
+            }
+
+            leftPtr = leftManifoldResult.Value.Handle;
+
+            var rightManifoldResult = ToManifold(right);
+            if (rightManifoldResult.IsFailure)
+            {
+                return Result.Failure<ManifoldOutcome>(rightManifoldResult.Error);
+            }
+
+            rightPtr = rightManifoldResult.Value.Handle;
+
+            var provenance = leftManifoldResult.Value.Merged || rightManifoldResult.Value.Merged
+                ? ManifoldProvenance.NativeAfterMergingOperands
+                : ManifoldProvenance.Native;
+
+            resultPtr = op(ManifoldNative.manifold_alloc_manifold(), leftPtr, rightPtr);
 
             var status = ManifoldNative.manifold_status(resultPtr);
             if (status != ManifoldError.NoError)
@@ -570,13 +581,13 @@ internal static unsafe class ManifoldKernel
         }
         finally
         {
-            if (resultPtr != IntPtr.Zero)
+            foreach (var handle in new[] { resultPtr, leftPtr, rightPtr })
             {
-                ManifoldNative.manifold_delete_manifold(resultPtr);
+                if (handle != IntPtr.Zero)
+                {
+                    ManifoldNative.manifold_delete_manifold(handle);
+                }
             }
-
-            ManifoldNative.manifold_delete_manifold(leftPtr);
-            ManifoldNative.manifold_delete_manifold(rightPtr);
         }
     }
 
@@ -610,57 +621,66 @@ internal static unsafe class ManifoldKernel
             triVerts[i] = (ulong)mesh.Triangles[i];
         }
 
-        fixed (double* pVerts = vertProps)
-        fixed (ulong* pTris = triVerts)
+        var meshGl = IntPtr.Zero;
+        var mergedMeshGl = IntPtr.Zero;
+        var manifold = IntPtr.Zero;
+        try
         {
-            var meshGl = ManifoldNative.manifold_alloc_meshgl64();
-            try
+            fixed (double* pVerts = vertProps)
+            fixed (ulong* pTris = triVerts)
             {
-                ManifoldNative.manifold_meshgl64(
-                    meshGl,
+                meshGl = ManifoldNative.manifold_meshgl64(
+                    ManifoldNative.manifold_alloc_meshgl64(),
                     pVerts,
                     (nuint)mesh.VertexCount,
                     3,
                     pTris,
                     (nuint)mesh.TriangleCount);
-
-                var manifold = ManifoldNative.manifold_alloc_manifold();
-                ManifoldNative.manifold_of_meshgl64(manifold, meshGl);
-
-                var status = ManifoldNative.manifold_status(manifold);
-                var merged = false;
-
-                if (status != ManifoldError.NoError)
-                {
-                    // The mesh is not a 2-manifold as supplied. Manifold's merge welds
-                    // near-coincident vertices, which closes the common case of a surface
-                    // exported with unshared vertices. It also *alters the geometry*, so the
-                    // caller is told: see ManifoldProvenance.
-                    ManifoldNative.manifold_delete_manifold(manifold);
-                    var mergedMeshGl = ManifoldNative.manifold_alloc_meshgl64();
-                    try
-                    {
-                        ManifoldNative.manifold_meshgl64_merge(mergedMeshGl, meshGl);
-                        manifold = ManifoldNative.manifold_alloc_manifold();
-                        ManifoldNative.manifold_of_meshgl64(manifold, mergedMeshGl);
-                        status = ManifoldNative.manifold_status(manifold);
-                        merged = status == ManifoldError.NoError;
-                    }
-                    finally
-                    {
-                        ManifoldNative.manifold_delete_meshgl64(mergedMeshGl);
-                    }
-                }
-
-                if (status != ManifoldError.NoError)
-                {
-                    ManifoldNative.manifold_delete_manifold(manifold);
-                    return Result.Failure<Operand>(ManifoldErrors.InvalidMesh(mesh.Metadata.Name, status));
-                }
-
-                return Result.Success(new Operand(manifold, merged));
             }
-            finally
+
+            manifold = ManifoldNative.manifold_of_meshgl64(ManifoldNative.manifold_alloc_manifold(), meshGl);
+
+            var status = ManifoldNative.manifold_status(manifold);
+            var merged = false;
+
+            if (status != ManifoldError.NoError)
+            {
+                // The mesh is not a 2-manifold as supplied. Manifold's merge welds
+                // near-coincident vertices, which closes the common case of a surface
+                // exported with unshared vertices. It also *alters the geometry*, so the
+                // caller is told: see ManifoldProvenance.
+                ManifoldNative.manifold_delete_manifold(manifold);
+                manifold = IntPtr.Zero;
+
+                mergedMeshGl = ManifoldNative.manifold_meshgl64_merge(ManifoldNative.manifold_alloc_meshgl64(), meshGl);
+                manifold = ManifoldNative.manifold_of_meshgl64(ManifoldNative.manifold_alloc_manifold(), mergedMeshGl);
+                status = ManifoldNative.manifold_status(manifold);
+                merged = status == ManifoldError.NoError;
+            }
+
+            if (status != ManifoldError.NoError)
+            {
+                return Result.Failure<Operand>(ManifoldErrors.InvalidMesh(mesh.Metadata.Name, status));
+            }
+
+            // Ownership passes to the caller.
+            var operand = new Operand(manifold, merged);
+            manifold = IntPtr.Zero;
+            return Result.Success(operand);
+        }
+        finally
+        {
+            if (manifold != IntPtr.Zero)
+            {
+                ManifoldNative.manifold_delete_manifold(manifold);
+            }
+
+            if (mergedMeshGl != IntPtr.Zero)
+            {
+                ManifoldNative.manifold_delete_meshgl64(mergedMeshGl);
+            }
+
+            if (meshGl != IntPtr.Zero)
             {
                 ManifoldNative.manifold_delete_meshgl64(meshGl);
             }
@@ -674,10 +694,10 @@ internal static unsafe class ManifoldKernel
             return ImmutableMesh.Create(ImmutableArray<Vec3>.Empty, ImmutableArray<int>.Empty, metadata);
         }
 
-        var meshGl = ManifoldNative.manifold_alloc_meshgl64();
+        var meshGl = IntPtr.Zero;
         try
         {
-            ManifoldNative.manifold_get_meshgl64(meshGl, manifold);
+            meshGl = ManifoldNative.manifold_get_meshgl64(ManifoldNative.manifold_alloc_meshgl64(), manifold);
 
             var nVerts = (int)ManifoldNative.manifold_meshgl64_num_vert(meshGl);
             var nTris = (int)ManifoldNative.manifold_meshgl64_num_tri(meshGl);
@@ -783,7 +803,10 @@ internal static unsafe class ManifoldKernel
         }
         finally
         {
-            ManifoldNative.manifold_delete_meshgl64(meshGl);
+            if (meshGl != IntPtr.Zero)
+            {
+                ManifoldNative.manifold_delete_meshgl64(meshGl);
+            }
         }
     }
 }
