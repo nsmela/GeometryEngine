@@ -224,3 +224,11 @@ dotnet run -c Release --project tests/GeometryEngine.Tests        # the test sui
 dotnet run -c Release --project samples/GeometryEngine.Showcase out   # write the STLs
 python3 tools/render/make_figures.py out                   # render the figures
 ```
+
+---
+
+## Licence
+
+GeometryEngine is released under the [MIT License](LICENSE). The libraries it
+redistributes or builds on keep their own licences, listed in
+[THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).
