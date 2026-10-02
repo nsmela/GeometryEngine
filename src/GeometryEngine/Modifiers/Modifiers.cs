@@ -185,19 +185,21 @@ internal sealed class OffsetHandler
             return ModifierErrors.OffsetFailed;
         }
 
-        var flat = new double[vertexCount * 3];
-        Marshal.Copy(native.Vertices, flat, 0, flat.Length);
-
-        var vertices = ImmutableArray.CreateBuilder<Vec3>(vertexCount);
-        for (var i = 0; i < vertexCount; i++)
+        // Vec3 is three doubles, laid out as the native buffer is, so each buffer is copied once,
+        // straight into the array the mesh will hold, rather than through a staging array.
+        var vertices = new Vec3[vertexCount];
+        unsafe
         {
-            vertices.Add(new Vec3(flat[i * 3], flat[(i * 3) + 1], flat[(i * 3) + 2]));
+            new ReadOnlySpan<Vec3>((void*)native.Vertices, vertexCount).CopyTo(vertices);
         }
 
         var triangles = new int[triangleCount * 3];
         Marshal.Copy(native.Triangles, triangles, 0, triangles.Length);
 
-        return ImmutableMesh.Create(vertices.MoveToImmutable(), ImmutableArray.Create(triangles), metadata);
+        return ImmutableMesh.Create(
+            ImmutableCollectionsMarshal.AsImmutableArray(vertices),
+            ImmutableCollectionsMarshal.AsImmutableArray(triangles),
+            metadata);
     }
 }
 
@@ -352,26 +354,17 @@ internal sealed class RepairSelfIntersectionsHandler
             return unchanged;
         }
 
-        var merged = shells.Value[0];
-        for (var i = 1; i < shells.Value.Length; i++)
-        {
-            var union = ManifoldKernel.Union(merged, shells.Value[i], metadata);
-            if (union.IsFailure)
-            {
-                return unchanged;
-            }
-
-            merged = union.Value.Mesh;
-        }
-
         if (shells.Value.Length == 1)
         {
             // One shell passing through itself: the kernel's boolean re-cuts it on the way through.
-            var resolved = ManifoldKernel.Union(merged, merged, metadata);
+            var resolved = ManifoldKernel.Union(shells.Value[0], shells.Value[0], metadata);
             return resolved.IsSuccess ? Result.Success(resolved.Value.Mesh) : unchanged;
         }
 
-        return Result.Success(merged.WithMetadata(metadata));
+        // Every shell in one native union. Folding them in one at a time sent the growing result
+        // across the boundary and back once per shell - quadratic in the shell count.
+        var union = ManifoldKernel.Batch(shells.Value, ManifoldOpType.Add, metadata);
+        return union.IsSuccess ? Result.Success(union.Value.Mesh.WithMetadata(metadata)) : unchanged;
     }
 }
 

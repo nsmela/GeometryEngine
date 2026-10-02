@@ -11,7 +11,14 @@ internal readonly record struct Cell(long X, long Y, long Z);
 /// </summary>
 internal sealed class VertexWelder(double tolerance)
 {
-    private readonly Dictionary<Cell, List<int>> _cells = [];
+    /// <summary>
+    /// Each occupied cell's first and last vertex; the rest are chained through
+    /// <see cref="_next"/>. Cells are the size of the tolerance, so almost every one holds a single
+    /// vertex, and a list per cell meant a list per vertex - two objects each, on every weld of a
+    /// boolean result, every STL import and every topology check.
+    /// </summary>
+    private readonly Dictionary<Cell, (int First, int Last)> _cells = [];
+    private readonly List<int> _next = [];
     private readonly List<Vec3> _vertices = [];
     private readonly double _tolerance = tolerance;
     private readonly double _toleranceSquared = tolerance * tolerance;
@@ -35,7 +42,8 @@ internal sealed class VertexWelder(double tolerance)
                         continue;
                     }
 
-                    foreach (var candidate in occupants)
+                    // In the order they were added, as the list this replaces visited them.
+                    for (var candidate = occupants.First; candidate >= 0; candidate = _next[candidate])
                     {
                         if ((_vertices[candidate] - vertex).LengthSquared <= _toleranceSquared)
                         {
@@ -48,14 +56,18 @@ internal sealed class VertexWelder(double tolerance)
 
         var index = _vertices.Count;
         _vertices.Add(vertex);
+        _next.Add(-1);
 
-        if (!_cells.TryGetValue(home, out var bucket))
+        if (_cells.TryGetValue(home, out var cell))
         {
-            bucket = [];
-            _cells[home] = bucket;
+            _next[cell.Last] = index;
+            _cells[home] = (cell.First, index);
+        }
+        else
+        {
+            _cells[home] = (index, index);
         }
 
-        bucket.Add(index);
         return index;
     }
 

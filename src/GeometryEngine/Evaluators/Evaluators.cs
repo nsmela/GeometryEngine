@@ -360,6 +360,7 @@ internal sealed class SelfIntersectionsHandler
         var bvh = new Internal.Spatial.MeshBvh(mesh);
         var intersecting = new bool[mesh.TriangleCount];
         var triangles = mesh.Triangles;
+        var candidates = new List<int>();
 
         for (var i = 0; i < mesh.TriangleCount; i++)
         {
@@ -368,13 +369,15 @@ internal sealed class SelfIntersectionsHandler
             var i2 = triangles[(i * 3) + 2];
             var (a0, a1, a2) = mesh.TriangleAt(i);
 
-            var self = i;
-            bvh.QueryBox(a0.ComponentMin(a1).ComponentMin(a2), a0.ComponentMax(a1).ComponentMax(a2), candidate =>
+            // One list reused across every triangle, rather than a stack, closure and delegate
+            // allocated per query. Candidates come back in the order the callback form visited them.
+            bvh.QueryBox(a0.ComponentMin(a1).ComponentMin(a2), a0.ComponentMax(a1).ComponentMax(a2), candidates);
+            foreach (var candidate in candidates)
             {
                 // Each unordered pair is tested once.
-                if (candidate <= self || (intersecting[self] && intersecting[candidate]))
+                if (candidate <= i || (intersecting[i] && intersecting[candidate]))
                 {
-                    return;
+                    continue;
                 }
 
                 var j0 = triangles[candidate * 3];
@@ -385,16 +388,16 @@ internal sealed class SelfIntersectionsHandler
                     i1 == j0 || i1 == j1 || i1 == j2 ||
                     i2 == j0 || i2 == j1 || i2 == j2)
                 {
-                    return;
+                    continue;
                 }
 
                 var (b0, b1, b2) = mesh.TriangleAt(candidate);
                 if (Internal.Spatial.TriangleIntersection.Intersects(a0, a1, a2, b0, b1, b2))
                 {
-                    intersecting[self] = true;
+                    intersecting[i] = true;
                     intersecting[candidate] = true;
                 }
-            });
+            }
         }
 
         return intersecting.Count(flag => flag);

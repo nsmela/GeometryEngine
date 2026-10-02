@@ -168,11 +168,13 @@ internal sealed class SignedDistanceGrid
         var j = index / _nx % _ny;
         var k = index / (_nx * _ny);
 
-        return new Vec3(
-            _origin.X + (i * _cell),
-            _origin.Y + (j * _cell),
-            _origin.Z + (k * _cell));
+        return PositionOf(i, j, k);
     }
+
+    private Vec3 PositionOf(int i, int j, int k) => new(
+        _origin.X + (i * _cell),
+        _origin.Y + (j * _cell),
+        _origin.Z + (k * _cell));
 
     /// <summary>
     /// Finds the zero crossing on each grid edge that has one, and gives both its nodes that
@@ -192,9 +194,10 @@ internal sealed class SignedDistanceGrid
                     var index = IndexOf(i, j, k);
                     var value = _values[index];
 
-                    if (i + 1 < _nx) { SeedEdge(index, IndexOf(i + 1, j, k), value, At(i + 1, j, k)); }
-                    if (j + 1 < _ny) { SeedEdge(index, IndexOf(i, j + 1, k), value, At(i, j + 1, k)); }
-                    if (k + 1 < _nz) { SeedEdge(index, IndexOf(i, j, k + 1), value, At(i, j, k + 1)); }
+                    var here = PositionOf(i, j, k);
+                    if (i + 1 < _nx) { SeedEdge(index, here, i + 1, j, k, value); }
+                    if (j + 1 < _ny) { SeedEdge(index, here, i, j + 1, k, value); }
+                    if (k + 1 < _nz) { SeedEdge(index, here, i, j, k + 1, value); }
                 }
             }
         }
@@ -205,8 +208,10 @@ internal sealed class SignedDistanceGrid
     /// point to both ends. Sub-cell by construction: the crossing is a real position, not the
     /// nearer node.
     /// </summary>
-    private void SeedEdge(int here, int there, double valueHere, double valueThere)
+    private void SeedEdge(int here, Vec3 from, int ti, int tj, int tk, double valueHere)
     {
+        var there = IndexOf(ti, tj, tk);
+        var valueThere = _values[there];
         if ((valueHere < 0) == (valueThere < 0))
         {
             return;
@@ -215,16 +220,19 @@ internal sealed class SignedDistanceGrid
         var span = Math.Abs(valueHere) + Math.Abs(valueThere);
         var t = span > 0 ? Math.Abs(valueHere) / span : 0.5;
 
-        var from = PositionOf(here);
-        var to = PositionOf(there);
+        var to = PositionOf(ti, tj, tk);
         var crossing = from + ((to - from) * t);
 
-        Offer(here, crossing);
-        Offer(there, crossing);
+        Offer(here, from, crossing);
+        Offer(there, to, crossing);
     }
 
-    /// <summary>Keeps <paramref name="candidate"/> for a node if it is nearer than what it already has.</summary>
-    private void Offer(int index, Vec3 candidate)
+    /// <summary>
+    /// Keeps <paramref name="candidate"/> for a node if it is nearer than what it already has. The
+    /// node's position is passed in by callers that already know its coordinates: recovering them
+    /// from the flat index costs three integer divisions, on every offer of every sweep.
+    /// </summary>
+    private void Offer(int index, Vec3 position, Vec3 candidate)
     {
         if (!_known[index])
         {
@@ -233,7 +241,6 @@ internal sealed class SignedDistanceGrid
             return;
         }
 
-        var position = PositionOf(index);
         if ((candidate - position).LengthSquared < (_closest[index] - position).LengthSquared)
         {
             _closest[index] = candidate;
@@ -267,13 +274,13 @@ internal sealed class SignedDistanceGrid
                     var closest = _closest[index];
 
                     var ni = i + step;
-                    if (ni >= 0 && ni < _nx) { Offer(IndexOf(ni, j, k), closest); }
+                    if (ni >= 0 && ni < _nx) { Offer(IndexOf(ni, j, k), PositionOf(ni, j, k), closest); }
 
                     var nj = j + step;
-                    if (nj >= 0 && nj < _ny) { Offer(IndexOf(i, nj, k), closest); }
+                    if (nj >= 0 && nj < _ny) { Offer(IndexOf(i, nj, k), PositionOf(i, nj, k), closest); }
 
                     var nk = k + step;
-                    if (nk >= 0 && nk < _nz) { Offer(IndexOf(i, j, nk), closest); }
+                    if (nk >= 0 && nk < _nz) { Offer(IndexOf(i, j, nk), PositionOf(i, j, nk), closest); }
                 }
             }
         }

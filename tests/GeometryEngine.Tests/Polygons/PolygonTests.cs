@@ -134,6 +134,76 @@ public sealed class PolygonTests
     }
 
     [Fact]
+    public void A_triangulation_with_holes_is_delaunay_throughout()
+    {
+        // Two holes in a scalloped outline: enough edges to flip that the old limit - a dozen
+        // flips in all, one per rebuild of the edge map - left some of them failing the test.
+        static ImmutableArray<Vec2> Ring(int n, double outer, double inner, double cx, double cy, bool clockwise) =>
+            [.. Enumerable.Range(0, n).Select(i =>
+            {
+                var angle = (clockwise ? -1 : 1) * 2 * Math.PI * i / n;
+                var radius = i % 2 == 0 ? outer : inner;
+                return new Vec2(cx + (radius * Math.Cos(angle)), cy + (radius * Math.Sin(angle)));
+            })];
+
+        var polygon = new PlanarPolygon(
+            Ring(80, 20, 18, 0, 0, clockwise: false),
+            [Ring(20, 3, 2, -8, 0, clockwise: true), Ring(24, 3, 2.5, 8, 1, clockwise: true)]);
+
+        var triangulation = Polygons.Triangulate([polygon]).Value;
+        var points = triangulation.Points;
+        var corners = triangulation.Triangles;
+
+        var owners = new Dictionary<(int, int), List<int>>();
+        for (var t = 0; t < corners.Length; t += 3)
+        {
+            for (var k = 0; k < 3; k++)
+            {
+                var (u, v) = (corners[t + k], corners[t + ((k + 1) % 3)]);
+                var key = u < v ? (u, v) : (v, u);
+                if (!owners.TryGetValue(key, out var list))
+                {
+                    owners[key] = list = [];
+                }
+
+                list.Add(t);
+            }
+        }
+
+        int Opposite(int t, (int A, int B) edge) =>
+            new[] { corners[t], corners[t + 1], corners[t + 2] }.First(v => v != edge.A && v != edge.B);
+
+        static double Cross(Vec2 a, Vec2 b, Vec2 c) => (b - a).Cross(c - a);
+
+        var failing = 0;
+        foreach (var (edge, triangles) in owners)
+        {
+            if (triangles.Count != 2)
+            {
+                continue;
+            }
+
+            var (p, q) = (points[edge.Item1], points[edge.Item2]);
+            var (r, s) = (points[Opposite(triangles[0], edge)], points[Opposite(triangles[1], edge)]);
+
+            // s inside the circle through p, q, r - and the quad convex, so a flip was possible.
+            var (a, b, c) = Cross(p, q, r) < 0 ? (p, r, q) : (p, q, r);
+            double ax = a.X - s.X, ay = a.Y - s.Y, bx = b.X - s.X, by = b.Y - s.Y, cx = c.X - s.X, cy = c.Y - s.Y;
+            var determinant =
+                (((ax * ax) + (ay * ay)) * ((bx * cy) - (cx * by))) -
+                (((bx * bx) + (by * by)) * ((ax * cy) - (cx * ay))) +
+                (((cx * cx) + (cy * cy)) * ((ax * by) - (bx * ay)));
+
+            if (determinant > 1e-12 && Cross(r, p, s) > 0 && Cross(r, s, q) > 0)
+            {
+                failing++;
+            }
+        }
+
+        Check.Equal(0, failing);
+    }
+
+    [Fact]
     public void Collinear_points_along_an_edge_never_become_a_sliver_triangle()
     {
         // Outlines are subdivided so they can bend over a surface, which lines points up along

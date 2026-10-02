@@ -91,6 +91,12 @@ internal static class MeshDecimator
         var trianglesPerVertex = BuildVertexTriangles(triangles, positions.Length);
         Func<int, int> find = Find;
 
+        // Scratch sets, cleared and refilled for every candidate rather than allocated for it:
+        // a decimation tries hundreds of thousands of collapses.
+        var neighboursA = new HashSet<int>();
+        var neighboursB = new HashSet<int>();
+        var neighbours = new HashSet<int>();
+
         var live = triangleCount;
         while (live > targetTriangleCount && queue.Count > 0)
         {
@@ -105,7 +111,7 @@ internal static class MeshDecimator
             var rootA = a;
             var rootB = b;
 
-            if (!SatisfiesLinkCondition(triangles, alive, trianglesPerVertex, find, rootA, rootB))
+            if (!SatisfiesLinkCondition(triangles, alive, trianglesPerVertex, find, rootA, rootB, neighboursA, neighboursB))
             {
                 continue;
             }
@@ -143,13 +149,14 @@ internal static class MeshDecimator
 
             // The merged vertex inherits b's triangles so later collapses see them, less the
             // ones that just died.
-            trianglesPerVertex[rootA].AddRange(trianglesPerVertex[rootB]);
+            var inherited = trianglesPerVertex[rootA];
+            inherited.AddRange(trianglesPerVertex[rootB]);
             trianglesPerVertex[rootB].Clear();
-            trianglesPerVertex[rootA].RemoveAll(t => !alive[t]);
+            DropDead(inherited, alive);
 
             // Re-price the edges around the new vertex; stale entries are filtered on dequeue by
             // the root check above.
-            var neighbours = new HashSet<int>();
+            neighbours.Clear();
             foreach (var t in trianglesPerVertex[rootA])
             {
                 for (var i = 0; i < 3; i++)
@@ -201,11 +208,26 @@ internal static class MeshDecimator
     /// the native kernel refuses it, and an offset built on its distance field returns noise.
     /// </summary>
     private static bool SatisfiesLinkCondition(
-        List<int> triangles, bool[] alive, List<int>[] trianglesPerVertex, Func<int, int> find, int rootA, int rootB)
+        List<int> triangles,
+        bool[] alive,
+        List<int>[] trianglesPerVertex,
+        Func<int, int> find,
+        int rootA,
+        int rootB,
+        HashSet<int> neighboursA,
+        HashSet<int> neighboursB)
     {
-        var neighboursA = Neighbours(triangles, alive, trianglesPerVertex, find, rootA);
-        var neighboursB = Neighbours(triangles, alive, trianglesPerVertex, find, rootB);
-        var shared = neighboursA.Count(neighboursB.Contains);
+        Neighbours(triangles, alive, trianglesPerVertex, find, rootA, neighboursA);
+        Neighbours(triangles, alive, trianglesPerVertex, find, rootB, neighboursB);
+
+        var shared = 0;
+        foreach (var neighbour in neighboursA)
+        {
+            if (neighboursB.Contains(neighbour))
+            {
+                shared++;
+            }
+        }
 
         var sharedFaces = 0;
         foreach (var t in trianglesPerVertex[rootA])
@@ -293,10 +315,11 @@ internal static class MeshDecimator
         return length < 1e-14 ? null : normal / length;
     }
 
-    private static HashSet<int> Neighbours(
-        List<int> triangles, bool[] alive, List<int>[] trianglesPerVertex, Func<int, int> find, int root)
+    /// <summary>Fills <paramref name="neighbours"/>, which is cleared first, with the vertices sharing a live triangle with <paramref name="root"/>.</summary>
+    private static void Neighbours(
+        List<int> triangles, bool[] alive, List<int>[] trianglesPerVertex, Func<int, int> find, int root, HashSet<int> neighbours)
     {
-        var neighbours = new HashSet<int>();
+        neighbours.Clear();
         foreach (var t in trianglesPerVertex[root])
         {
             if (!alive[t])
@@ -313,8 +336,21 @@ internal static class MeshDecimator
                 }
             }
         }
+    }
 
-        return neighbours;
+    /// <summary>Removes the dead triangles from a vertex's list in place, keeping the rest in order.</summary>
+    private static void DropDead(List<int> list, bool[] alive)
+    {
+        var kept = 0;
+        for (var i = 0; i < list.Count; i++)
+        {
+            if (alive[list[i]])
+            {
+                list[kept++] = list[i];
+            }
+        }
+
+        list.RemoveRange(kept, list.Count - kept);
     }
 
     private static List<int>[] BuildVertexTriangles(List<int> triangles, int vertexCount)

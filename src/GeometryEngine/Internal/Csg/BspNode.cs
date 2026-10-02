@@ -90,35 +90,87 @@ internal sealed class BspNode
     /// <summary>Discards the parts of <paramref name="polygons"/> that lie inside this solid.</summary>
     public List<CsgPolygon> ClipPolygons(IReadOnlyList<CsgPolygon> polygons, Tolerance tolerance)
     {
-        if (!_divider.HasValue)
-        {
-            return [.. polygons];
-        }
+        var kept = new List<CsgPolygon>(polygons.Count);
+        ClipInto([.. polygons], tolerance, kept);
+        return kept;
+    }
 
+    /// <summary>
+    /// Appends what survives of <paramref name="polygons"/> to <paramref name="kept"/>, consuming
+    /// the list it is given as scratch space.
+    ///
+    /// The walk down the tree is a loop over lists swapped at every level, not a call that
+    /// allocates fresh ones. That matters because the tree is frequently a chain: every face plane
+    /// of a convex solid has all the other faces behind it, so no divider can do better, and a
+    /// sphere's tree is exactly as deep as it has distinct planes. Allocating two lists per level
+    /// made clipping one tree against another allocate quadratically - 3 GB to subtract one
+    /// 5,000-triangle sphere from another. Survivors are appended in the order the recursive form
+    /// produced them (everything in front of a node, then everything behind it), so the output
+    /// is unchanged.
+    /// </summary>
+    private void ClipInto(List<CsgPolygon> polygons, Tolerance tolerance, List<CsgPolygon> kept)
+    {
+        var node = this;
+        var current = polygons;
         var inFront = new List<CsgPolygon>();
         var behind = new List<CsgPolygon>();
 
-        foreach (var polygon in polygons)
+        while (node._divider.HasValue)
         {
-            // Coplanar pieces follow the side their own normal agrees with.
-            PolygonSplitter.Split(_divider.Value, polygon, tolerance, inFront, behind, inFront, behind);
+            // Nothing left to clip: the rest of the tree has nothing to say.
+            if (current.Count == 0)
+            {
+                return;
+            }
+
+            inFront.Clear();
+            behind.Clear();
+            foreach (var polygon in current)
+            {
+                // Coplanar pieces follow the side their own normal agrees with.
+                PolygonSplitter.Split(node._divider.Value, polygon, tolerance, inFront, behind, inFront, behind);
+            }
+
+            // Everything went in front - the usual case down an inverted tree, whose chain runs
+            // that way - so walk on down the front without recursing.
+            if (behind.Count == 0 && node._front.HasValue)
+            {
+                node = node._front.Value;
+                (current, inFront) = (inFront, current);
+                continue;
+            }
+
+            if (inFront.Count > 0)
+            {
+                if (node._front.HasValue)
+                {
+                    node._front.Value.ClipInto(inFront, tolerance, kept);
+                    inFront = new List<CsgPolygon>();
+                }
+                else
+                {
+                    kept.AddRange(inFront);
+                }
+            }
+
+            // No back child: everything behind is inside the solid, and is discarded.
+            if (!node._back.HasValue)
+            {
+                return;
+            }
+
+            node = node._back.Value;
+            (current, behind) = (behind, current);
         }
 
-        var kept = _front.HasValue ? _front.Value.ClipPolygons(inFront, tolerance) : inFront;
-
-        if (_back.HasValue)
-        {
-            kept.AddRange(_back.Value.ClipPolygons(behind, tolerance));
-        }
-
-        return kept;
+        kept.AddRange(current);
     }
 
     /// <summary>Removes everything of this solid that lies inside <paramref name="other"/>.</summary>
     public BspNode ClippedTo(BspNode other, Tolerance tolerance) =>
         new(
             _divider,
-            [.. other.ClipPolygons(_polygons, tolerance)],
+            _polygons.IsEmpty ? _polygons : [.. other.ClipPolygons(_polygons, tolerance)],
             _front.Map(node => node.ClippedTo(other, tolerance)),
             _back.Map(node => node.ClippedTo(other, tolerance)));
 

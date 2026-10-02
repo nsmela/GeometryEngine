@@ -78,6 +78,11 @@ internal sealed class MeshBvh
         {
             Build(0, triangleCount, ref _nodeCount, 1, ref _maxDepth);
         }
+
+        // That bound is for leaves of one triangle; leaves hold up to LeafSize, so the build uses
+        // a quarter of it or less. A tree lives as long as the mesh it is cached on, and at 64
+        // bytes a node the slack was most of its memory.
+        Array.Resize(ref _nodes, Math.Max(1, _nodeCount));
     }
 
     /// <summary>
@@ -281,8 +286,23 @@ internal sealed class MeshBvh
                 continue;
             }
 
-            stack[top++] = node.Left;
-            stack[top++] = node.Right;
+            // Nearer child last, so it is searched first: the closer hit it finds prunes more of
+            // the farther one. A child already beyond the best hit is not pushed at all.
+            var leftSquared = SquaredDistanceToBox(point, _nodes[node.Left].Min, _nodes[node.Left].Max);
+            var rightSquared = SquaredDistanceToBox(point, _nodes[node.Right].Min, _nodes[node.Right].Max);
+            var (near, nearSquared, far, farSquared) = leftSquared <= rightSquared
+                ? (node.Left, leftSquared, node.Right, rightSquared)
+                : (node.Right, rightSquared, node.Left, leftSquared);
+
+            if (farSquared <= bestSquared)
+            {
+                stack[top++] = far;
+            }
+
+            if (nearSquared <= bestSquared)
+            {
+                stack[top++] = near;
+            }
         }
 
         distance = Math.Sqrt(bestSquared);
@@ -317,20 +337,20 @@ internal sealed class MeshBvh
     }
 
     /// <summary>
-    /// Calls <paramref name="onOverlap"/> for every triangle whose bounds overlap the given box:
-    /// the broad phase of self-intersection testing.
+    /// Collects into <paramref name="into"/> every triangle whose bounds overlap the given box:
+    /// the broad phase of self-intersection testing. The list is the caller's and is reused, since
+    /// the one caller queries once per triangle and would otherwise allocate every time. Nothing
+    /// runs mid-descent, so the pooled stack is safe to use.
     /// </summary>
-    public void QueryBox(Vec3 min, Vec3 max, Action<int> onOverlap)
+    public void QueryBox(Vec3 min, Vec3 max, List<int> into)
     {
+        into.Clear();
         if (IsEmpty)
         {
             return;
         }
 
-        // Its own stack, not the pooled one: this is the only traversal that hands control back
-        // to a caller mid-descent, and a callback that queried the tree again would walk over
-        // the shared buffer underneath it.
-        var stack = new int[StackDepth];
+        var stack = RentStack(StackDepth);
         var top = 0;
         stack[top++] = 0;
 
@@ -349,7 +369,7 @@ internal sealed class MeshBvh
             {
                 for (var i = node.Start; i < node.Start + node.Count; i++)
                 {
-                    onOverlap(_triangleOrder[i]);
+                    into.Add(_triangleOrder[i]);
                 }
 
                 continue;

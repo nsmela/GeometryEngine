@@ -50,16 +50,20 @@ internal static class LaplacianSmoother
         var buffer = new Vec3[positions.Length];
         for (var i = 0; i < iterations; i++)
         {
+            // Each pass writes every vertex into the other buffer, so the two trade places rather
+            // than the whole array being copied back after every pass.
             Pass(positions, buffer, neighbourStart, neighbours, pinned, strength);
+            (positions, buffer) = (buffer, positions);
             Pass(positions, buffer, neighbourStart, neighbours, pinned, mu);
+            (positions, buffer) = (buffer, positions);
         }
 
         return ([.. positions], triangles);
     }
 
     /// <summary>
-    /// One filter pass. The new positions are written to <paramref name="buffer"/> and only
-    /// swapped in once every vertex has been computed, so each vertex sees the same generation of
+    /// One filter pass. The new positions are written to <paramref name="buffer"/>, which the
+    /// caller swaps in once every vertex has been computed, so each vertex sees the same generation of
     /// its neighbours. Updating in place instead would let a vertex read neighbours this pass had
     /// already moved, which makes the result depend on vertex ordering - the same mesh saved with
     /// its vertices in a different order would smooth differently.
@@ -94,6 +98,5 @@ internal static class LaplacianSmoother
             buffer[v] = positions[v] + ((centroid - positions[v]) * factor);
         }
 
-        Array.Copy(buffer, positions, positions.Length);
     }
 }

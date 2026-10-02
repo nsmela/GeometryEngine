@@ -190,9 +190,14 @@ internal static class PolygonTriangulator
     /// </summary>
     private static void DelaunayFlip(List<Vec2> ring, List<(int A, int B, int C)> triangles)
     {
-        // Capped because a flip can in principle undo an earlier one on degenerate input; in
-        // practice this settles in a handful of passes.
-        const int maxPasses = 12;
+        // Each pass flips every edge that still fails the test and whose two triangles have not
+        // already been changed this pass - their owner entries would be stale - then the owner
+        // map is rebuilt for the next. Flipping only one edge per rebuild, under a fixed cap of
+        // passes, used to stop after a dozen flips however many slivers remained. The cap here
+        // only guards against a cycle on degenerate input; each pass that flips anything brings
+        // the triangulation closer to Delaunay, and in practice it settles in a handful.
+        var maxPasses = Math.Max(12, triangles.Count);
+        var touched = new bool[triangles.Count];
 
         for (var pass = 0; pass < maxPasses; pass++)
         {
@@ -205,10 +210,11 @@ internal static class PolygonTriangulator
                 Register(edgeOwners, c, a, t);
             }
 
+            Array.Clear(touched);
             var flipped = false;
             foreach (var (edge, owners) in edgeOwners)
             {
-                if (owners.Second < 0)
+                if (owners.Second < 0 || touched[owners.First] || touched[owners.Second])
                 {
                     continue;
                 }
@@ -238,8 +244,9 @@ internal static class PolygonTriangulator
 
                 triangles[owners.First] = (opposite0, edge.Item1, opposite1);
                 triangles[owners.Second] = (opposite1, edge.Item2, opposite0);
+                touched[owners.First] = true;
+                touched[owners.Second] = true;
                 flipped = true;
-                break; // The owner map is stale now; rebuild it.
             }
 
             if (!flipped)
@@ -430,6 +437,15 @@ internal static class PolygonTriangulator
     }
 
     /// <summary>Ear clipping on a counter-clockwise simple polygon, taking the roundest ear each time.</summary>
+    /// <remarks>
+    /// Each corner's ear test is kept between clips rather than repeated for every corner after
+    /// every clip, which made a 2,000-point outline take ten seconds. Clipping a corner changes
+    /// only two things: the triangles at its two neighbours, and - since the clipped point is gone
+    /// - whether it still blocks any corner it lay inside. Nothing can become blocked, because no
+    /// point is added. So only the neighbours, and the corners the clipped point was blocking,
+    /// are tested again; every other answer still holds, and the ear chosen each round is the one
+    /// a full rescan would choose.
+    /// </remarks>
     private static List<(int A, int B, int C)> EarClip(List<Vec2> ring)
     {
         var triangles = new List<(int, int, int)>();
@@ -439,6 +455,14 @@ internal static class PolygonTriangulator
         }
 
         var indices = Enumerable.Range(0, ring.Count).ToList();
+
+        // Per corner, by its index into the ring: whether its test is still current, whether it is
+        // an ear and how round, and - for a convex corner that is not - the point inside it.
+        var tested = new bool[ring.Count];
+        var isEar = new bool[ring.Count];
+        var quality = new double[ring.Count];
+        var blocker = new int[ring.Count];
+        var clipped = new bool[ring.Count];
 
         // Each failed sweep means no ear was found; bail rather than spin on non-simple input.
         var guard = ring.Count * ring.Count;
@@ -450,55 +474,16 @@ internal static class PolygonTriangulator
 
             for (var i = 0; i < indices.Count; i++)
             {
-                var previous = indices[(i - 1 + indices.Count) % indices.Count];
                 var current = indices[i];
-                var next = indices[(i + 1) % indices.Count];
-
-                var a = ring[previous];
-                var b = ring[current];
-                var c = ring[next];
-
-                if (!IsConvexCorner(a, b, c))
+                if (!tested[current] || (blocker[current] >= 0 && clipped[blocker[current]]))
                 {
-                    continue; // Reflex or collinear: not an ear.
+                    TestEar(ring, indices, i, isEar, quality, blocker);
+                    tested[current] = true;
                 }
 
-                var contains = false;
-                foreach (var other in indices)
+                if (isEar[current] && quality[current] > bestQuality)
                 {
-                    if (other == previous || other == current || other == next)
-                    {
-                        continue;
-                    }
-
-                    // A hole's bridge visits two positions twice, so another index can sit exactly
-                    // on this ear's corner. That copy is the same point, not a point inside the
-                    // ear; counting it would block every ear along the bridge and leave the rest
-                    // to the fan below.
-                    var point = ring[other];
-                    if (point == a || point == b || point == c)
-                    {
-                        continue;
-                    }
-
-                    if (PointInTriangle(point, a, b, c))
-                    {
-                        contains = true;
-                        break;
-                    }
-                }
-
-                if (contains)
-                {
-                    continue;
-                }
-
-                // Clipping in index order walks the outline and leaves a fan of slivers behind
-                // it; slivers are what become self-intersections once a decal is wrapped.
-                var quality = Roundness(a, b, c);
-                if (quality > bestQuality)
-                {
-                    bestQuality = quality;
+                    bestQuality = quality[current];
                     bestSlot = i;
                 }
             }
@@ -510,10 +495,13 @@ internal static class PolygonTriangulator
                 break;
             }
 
-            triangles.Add((
-                indices[(bestSlot - 1 + indices.Count) % indices.Count],
-                indices[bestSlot],
-                indices[(bestSlot + 1) % indices.Count]));
+            var previous = indices[(bestSlot - 1 + indices.Count) % indices.Count];
+            var next = indices[(bestSlot + 1) % indices.Count];
+            triangles.Add((previous, indices[bestSlot], next));
+
+            clipped[indices[bestSlot]] = true;
+            tested[previous] = false;
+            tested[next] = false;
             indices.RemoveAt(bestSlot);
         }
 
@@ -530,6 +518,55 @@ internal static class PolygonTriangulator
         }
 
         return triangles;
+    }
+
+    /// <summary>Tests the corner at <paramref name="slot"/> of the remaining outline, recording the answer by its ring index.</summary>
+    private static void TestEar(List<Vec2> ring, List<int> indices, int slot, bool[] isEar, double[] quality, int[] blocker)
+    {
+        var previous = indices[(slot - 1 + indices.Count) % indices.Count];
+        var current = indices[slot];
+        var next = indices[(slot + 1) % indices.Count];
+
+        var a = ring[previous];
+        var b = ring[current];
+        var c = ring[next];
+
+        isEar[current] = false;
+        blocker[current] = -1;
+
+        if (!IsConvexCorner(a, b, c))
+        {
+            return; // Reflex or collinear: not an ear, until a neighbour changes.
+        }
+
+        foreach (var other in indices)
+        {
+            if (other == previous || other == current || other == next)
+            {
+                continue;
+            }
+
+            // A hole's bridge visits two positions twice, so another index can sit exactly
+            // on this ear's corner. That copy is the same point, not a point inside the
+            // ear; counting it would block every ear along the bridge and leave the rest
+            // to the fan below.
+            var point = ring[other];
+            if (point == a || point == b || point == c)
+            {
+                continue;
+            }
+
+            if (PointInTriangle(point, a, b, c))
+            {
+                blocker[current] = other;
+                return;
+            }
+        }
+
+        // Clipping in index order walks the outline and leaves a fan of slivers behind
+        // it; slivers are what become self-intersections once a decal is wrapped.
+        isEar[current] = true;
+        quality[current] = Roundness(a, b, c);
     }
 
     private static List<Vec2> Clean(IReadOnlyList<Vec2> contour)
