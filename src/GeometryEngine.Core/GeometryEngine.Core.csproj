@@ -18,4 +18,14 @@
   <ItemGroup>
     <PackageReference Include="BasicResults" Version="$(BasicResultsVersion)" />
   </ItemGroup>
+
+  <!--
+    The engine fills each mesh's measurement cache (MeshMeasurements) as it measures. It ships in
+    the same package as Core, so this is one library talking to itself rather than a seam a
+    consumer could see.
+  -->
+  <ItemGroup>
+    <InternalsVisibleTo Include="GeometryEngine" />
+    <InternalsVisibleTo Include="GeometryEngine.Tests" />
+  </ItemGroup>
 </Project>

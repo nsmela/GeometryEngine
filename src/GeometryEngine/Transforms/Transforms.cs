@@ -19,7 +19,14 @@ internal static class TransformErrors
 /// </summary>
 internal static class VertexMap
 {
-    public static Result<IMesh> Apply(IMesh mesh, Func<Vec3, Vec3> map, string operation)
+    /// <param name="rigidTurn">
+    /// For a map that keeps every distance - a translation or a rotation - how it turns a
+    /// direction; null for one that does not. What has been measured of a rigidly moved input
+    /// still describes the output, bounds and normals aside, and is carried across rather than
+    /// left for the next caller to measure again. A scale is not rigid: it changes volume and
+    /// area, and stretches slivers and gaps across the tolerance the audit reads.
+    /// </param>
+    public static Result<IMesh> Apply(IMesh mesh, Func<Vec3, Vec3> map, string operation, Func<Vec3, Vec3>? rigidTurn)
     {
         ArgumentNullException.ThrowIfNull(mesh);
 
@@ -29,15 +36,27 @@ internal static class VertexMap
         }
 
         var moved = ImmutableArray.CreateBuilder<Vec3>(mesh.VertexCount);
+        var min = map(mesh.Vertices[0]);
+        var max = min;
         foreach (var vertex in mesh.Vertices)
         {
-            moved.Add(map(vertex));
+            var point = map(vertex);
+            moved.Add(point);
+            min = min.ComponentMin(point);
+            max = max.ComponentMax(point);
         }
 
-        return ImmutableMesh.Create(
+        var created = ImmutableMesh.Create(
             moved.MoveToImmutable(),
             mesh.Triangles,
             mesh.Metadata.CarriedThrough(MeshOperation.Transform, $"GeometryEngine.Transforms.{operation}"));
+
+        if (rigidTurn is not null && created.IsSuccess && mesh is ImmutableMesh source && created.Value is ImmutableMesh result)
+        {
+            result.Measurements.CarryRigid(source.Measurements, rigidTurn, min, max);
+        }
+
+        return created;
     }
 }
 
@@ -48,7 +67,7 @@ internal sealed class TranslateHandler
 {
     public Result<IMesh> Handle(TranslateRequest request) =>
         request.Offset.IsFinite
-            ? VertexMap.Apply(request.Mesh, vertex => vertex + request.Offset, "Translate")
+            ? VertexMap.Apply(request.Mesh, vertex => vertex + request.Offset, "Translate", MeshMeasurements.Unturned)
             : TransformErrors.NonFiniteTransform;
 }
 
@@ -74,7 +93,8 @@ internal sealed class ScaleHandler
         return VertexMap.Apply(
             request.Mesh,
             vertex => new Vec3(vertex.X * factors.X, vertex.Y * factors.Y, vertex.Z * factors.Z),
-            "Scale");
+            "Scale",
+            rigidTurn: null);
     }
 }
 
@@ -101,12 +121,13 @@ internal sealed class RotateHandler
         var cosine = Math.Cos(request.Radians);
         var sine = Math.Sin(request.Radians);
 
-        return VertexMap.Apply(
-            request.Mesh,
-            vertex => (vertex * cosine)
-                      + (axis.Cross(vertex) * sine)
-                      + (axis * (axis.Dot(vertex) * (1 - cosine))),
-            "Rotate");
+        // About an axis through the origin, so the same map turns points and directions alike.
+        Vec3 Rotate(Vec3 vertex) =>
+            (vertex * cosine)
+            + (axis.Cross(vertex) * sine)
+            + (axis * (axis.Dot(vertex) * (1 - cosine)));
+
+        return VertexMap.Apply(request.Mesh, Rotate, "Rotate", Rotate);
     }
 }
 
@@ -123,4 +144,12 @@ internal sealed class GeometryTransforms : IGeometryTransforms
 
     public Result<IMesh> Rotate(IMesh mesh, Direction axis, double radians) =>
         _rotate.Handle(new RotateRequest(mesh, axis, radians));
+
+    public Result<IMesh> Rotate(IMesh mesh, Rotation rotation)
+    {
+        ArgumentNullException.ThrowIfNull(rotation);
+
+        // About the origin, so the same map turns points and directions alike.
+        return VertexMap.Apply(mesh, rotation.Apply, "Rotate", rotation.Apply);
+    }
 }

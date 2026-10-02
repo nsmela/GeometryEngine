@@ -20,6 +20,24 @@ internal static class PolygonTriangulator
         var points = new List<Vec2>();
         var triangles = new List<(int, int, int)>();
 
+        foreach (var (outer, holes) in Nest(contours))
+        {
+            TriangulateWithHoles(outer, holes, points, triangles);
+        }
+
+        return (points, triangles);
+    }
+
+    /// <summary>
+    /// Groups contours into outlines and the holes directly inside each, by containment: a ring
+    /// nested inside an odd number of others is a hole, and an island inside a hole is an outline
+    /// of its own. Order and winding are ignored, and both come back as they arrived. Repeated
+    /// points are dropped, and so are rings with fewer than three points or no area.
+    /// </summary>
+    public static List<(List<Vec2> Outer, List<List<Vec2>> Holes)> Nest(IReadOnlyList<IReadOnlyList<Vec2>> contours)
+    {
+        var nested = new List<(List<Vec2>, List<List<Vec2>>)>();
+
         var rings = new List<List<Vec2>>();
         foreach (var contour in contours)
         {
@@ -32,7 +50,7 @@ internal static class PolygonTriangulator
 
         if (rings.Count == 0)
         {
-            return (points, triangles);
+            return nested;
         }
 
         // A ring nested inside an odd number of other rings is a hole.
@@ -83,10 +101,10 @@ internal static class PolygonTriangulator
                 }
             }
 
-            TriangulateWithHoles(rings[i], holes, points, triangles);
+            nested.Add((rings[i], holes));
         }
 
-        return (points, triangles);
+        return nested;
     }
 
     private static void TriangulateWithHoles(

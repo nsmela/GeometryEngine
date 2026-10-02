@@ -21,6 +21,26 @@ internal enum ManifoldError
     Cancelled = 14,
 }
 
+/// <summary>Manifold's <c>ManifoldOpType</c>, in its declaration order.</summary>
+internal enum ManifoldOpType
+{
+    Add = 0,
+    Subtract = 1,
+    Intersect = 2,
+}
+
+/// <summary>
+/// Manifold's <c>ManifoldManifoldPair</c>: two manifolds returned together, each constructed in
+/// the memory the caller passed for it. Returned by value, which the default marshaller handles
+/// for a blittable struct.
+/// </summary>
+[StructLayout(LayoutKind.Sequential)]
+internal struct ManifoldPair
+{
+    public IntPtr First;
+    public IntPtr Second;
+}
+
 internal static unsafe class ManifoldNative
 {
     private const string LibraryName = "manifoldc";
@@ -94,6 +114,35 @@ internal static unsafe class ManifoldNative
 
     [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
     public static extern IntPtr manifold_intersection(IntPtr mem, IntPtr a, IntPtr b);
+
+    // Batch booleans. The vector holds copies of the manifolds pushed into it - a Manifold is a
+    // shared handle onto its geometry, so a copy is cheap - and the caller still owns, and must
+    // delete, each manifold it pushed. Signatures and enum order checked against
+    // bindings/c/include/manifold/manifoldc.h and types.h of the shipped version.
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    public static extern IntPtr manifold_alloc_manifold_vec();
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    public static extern void manifold_delete_manifold_vec(IntPtr ms);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    public static extern IntPtr manifold_manifold_empty_vec(IntPtr mem);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    public static extern void manifold_manifold_vec_push_back(IntPtr ms, IntPtr m);
+
+    /// <summary>
+    /// Combines every manifold in the vector at once. For <see cref="ManifoldOpType.Subtract"/>
+    /// the first is the subject and every later one is taken away from it.
+    /// </summary>
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    public static extern IntPtr manifold_batch_boolean(IntPtr mem, IntPtr ms, ManifoldOpType op);
+
+    // Plane cuts. The plane is normal . p = offset; the normal need not be unit length, as
+    // Manifold normalises it, but the offset is then measured along the unit normal.
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    public static extern ManifoldPair manifold_split_by_plane(
+        IntPtr memFirst, IntPtr memSecond, IntPtr m, double normalX, double normalY, double normalZ, double offset);
 
     // Diagnostics / info
     [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]

@@ -15,13 +15,11 @@ public sealed class MemoryLeakTests
         // Warm up JIT, native runtime, and initial CRT/GC heap segments
         for (var i = 0; i < 20; i++)
         {
-            _ = engine.Booleans.Union(a, b).Value.TriangleCount;
-            _ = engine.Booleans.Subtract(a, b).Value.TriangleCount;
-            _ = engine.Booleans.Intersect(a, b).Value.TriangleCount;
+            _ = Cycle(engine, a, b);
         }
 
-        // Measure memory retained across a moderate run (100 cycles = 300 ops)
-        // vs a run 3x longer (300 cycles = 900 ops).
+        // Measure memory retained across a moderate run (100 cycles = 600 ops)
+        // vs a run 3x longer (300 cycles = 1800 ops).
         var (managed1, private1) = MeasureRetained(engine, a, b, 100);
         var (managed2, private2) = MeasureRetained(engine, a, b, 300);
 
@@ -33,7 +31,7 @@ public sealed class MemoryLeakTests
         //
         // The ceilings are set against what a leak here would actually cost. Each cycle
         // marshals both operands and the result across the boundary, tens of thousands of
-        // triangles apiece; failing to free that would retain hundreds of megabytes over 900
+        // triangles apiece; failing to free that would retain hundreds of megabytes over 1800
         // operations, far above these figures.
         const long ManagedCeiling = 8L * 1024 * 1024;
         const long NativeCeiling = 64L * 1024 * 1024;
@@ -46,13 +44,29 @@ public sealed class MemoryLeakTests
 
         Check.True(
             managed2 <= ManagedCeiling,
-            $"Managed memory retained after 900 operations: {managed2 / 1024}KB " +
-            $"(ceiling {ManagedCeiling / 1024}KB; 300 operations retained {managed1 / 1024}KB)");
+            $"Managed memory retained after 1800 operations: {managed2 / 1024}KB " +
+            $"(ceiling {ManagedCeiling / 1024}KB; 600 operations retained {managed1 / 1024}KB)");
 
         Check.True(
             native2 <= NativeCeiling,
-            $"Native memory retained after 900 operations: {native2 / 1024}KB " +
-            $"(ceiling {NativeCeiling / 1024}KB; 300 operations retained {native1 / 1024}KB)");
+            $"Native memory retained after 1800 operations: {native2 / 1024}KB " +
+            $"(ceiling {NativeCeiling / 1024}KB; 600 operations retained {native1 / 1024}KB)");
+    }
+
+    /// <summary>
+    /// One of every native boolean path: the pairwise three, the two batches - which also build
+    /// and free a native vector - and a split, which constructs two results at once.
+    /// </summary>
+    private static int Cycle(IGeometryEngine engine, IMesh a, IMesh b)
+    {
+        var split = engine.Booleans.Split(a, Plane.FromNormalAndPoint(Direction.X, new Vec3(2, 0, 0))).Value;
+
+        return engine.Booleans.Union(a, b).Value.TriangleCount
+            + engine.Booleans.Subtract(a, b).Value.TriangleCount
+            + engine.Booleans.Intersect(a, b).Value.TriangleCount
+            + engine.Booleans.Union([a, b]).Value.TriangleCount
+            + engine.Booleans.Subtract(a, [b]).Value.TriangleCount
+            + split.Front.TriangleCount + split.Back.TriangleCount;
     }
 
     private static (long Managed, long Private) MeasureRetained(
@@ -69,9 +83,7 @@ public sealed class MemoryLeakTests
         var checksum = 0;
         for (var i = 0; i < cycles; i++)
         {
-            checksum += engine.Booleans.Union(a, b).Value.TriangleCount;
-            checksum += engine.Booleans.Subtract(a, b).Value.TriangleCount;
-            checksum += engine.Booleans.Intersect(a, b).Value.TriangleCount;
+            checksum += Cycle(engine, a, b);
         }
 
         GC.KeepAlive(checksum);

@@ -78,17 +78,17 @@ internal sealed class BuildPrismHandler
         var surfacePoints = new Vec3[points.Count];
         var normals = new Vec3[points.Count];
 
-        // An index the caller already holds is theirs: query it and leave it open. One built here
-        // belongs to this call and is closed with it.
-        var supplied = spec.SurfaceIndex.HasValue ? spec.SurfaceIndex.Value as SpatialIndex : null;
+        // An index the caller already holds is theirs: query it and leave it open. Otherwise the
+        // surface's own index, kept with it, so a prism laid again and again on one surface -
+        // dragged across it, or one per label - builds it once.
+        var supplied = spec.SurfaceIndex.HasValue ? SharedIndexes.Unwrap(spec.SurfaceIndex.Value) : null;
         if (supplied is not null)
         {
             PlaceOnSurface(supplied, frame, points, surfacePoints, normals);
         }
         else if (spec.Surface.HasValue && !spec.Surface.Value.IsEmpty)
         {
-            using var index = new SpatialIndex(spec.Surface.Value);
-            PlaceOnSurface(index, frame, points, surfacePoints, normals);
+            PlaceOnSurface(SharedIndexes.For(spec.Surface.Value).Inner, frame, points, surfacePoints, normals);
         }
         else
         {
@@ -353,7 +353,7 @@ internal sealed class ProjectPrismHandler
         }
 
         var frame = request.Frame;
-        var surface = index?.Tree ?? new MeshBvh(request.Surface);
+        var surface = (index ?? SharedIndexes.For(request.Surface).Inner).Tree;
         var towards = -frame.N;
         var vertices = request.Prism.Vertices;
 
@@ -427,6 +427,6 @@ internal sealed class DecalOperations : IDecalOperations
     {
         ArgumentNullException.ThrowIfNull(surface);
 
-        return _project.Handle(new ProjectPrismRequest(surface.Mesh, frame, prism), surface as SpatialIndex);
+        return _project.Handle(new ProjectPrismRequest(surface.Mesh, frame, prism), SharedIndexes.Unwrap(surface));
     }
 }
