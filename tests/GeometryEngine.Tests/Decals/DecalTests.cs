@@ -30,6 +30,54 @@ public sealed class DecalTests
     }
 
     [Fact]
+    public void A_label_on_a_flat_face_lies_flat_on_it()
+    {
+        // On a flat face every point already sits on the surface, and a ray settling it that
+        // starts there misses that face - the points sank through to the face behind, and the
+        // label on a mould's flat side came back shredded into spikes reaching its far wall.
+        var slab = Fixtures.Box(new Vec3(-30, -30, -4), new Vec3(30, 30, 0));
+        var spec = new DecalPrismSpec(
+            [PlanarPolygon.FromOuter(Assets.Square(-10, -5, 10))],
+            new SurfaceFrame(Vec3.Zero, Vec3.UnitX, Vec3.UnitY, Vec3.UnitZ),
+            Depth: 0.8, Sink: -0.05, Overshoot: 0.05, MaxEdgeLength: 1,
+            Surface: Maybe<IMesh>.Some(slab));
+
+        var prism = Fixtures.Engine.Decals.BuildPrism(spec).Value;
+
+        for (var i = 0; i < prism.VertexCount; i += 2)
+        {
+            Check.Close(-0.05, prism.Vertices[i].Z, 1e-6);
+            Check.Close(0.85, prism.Vertices[i + 1].Z, 1e-6);
+        }
+    }
+
+    [Fact]
+    public void A_glyph_with_holes_has_walls_only_along_its_outlines()
+    {
+        // The triangulator joins each hole to the outline with a slit, visiting the slit's two
+        // ends twice. Those visits came back as separate points, so the prism took the slit for
+        // an outline and stood a wall either side of it: a double wall inside the letter from
+        // its edge to each counter, invisible on a closed solid but plain through a translucent
+        // preview - one in an A, two in a B.
+        var b = new PlanarPolygon(Assets.Square(0, 0, 10), [Assets.Square(2, 2, 2, true), Assets.Square(2, 6, 2, true)]);
+
+        var prism = Fixtures.Engine.Decals.BuildPrism(new DecalPrismSpec([b], Flat, 1, 0, 0)).Value;
+
+        // The builder interleaves bottom and top copies, so a wall triangle mixes odd and even corners.
+        var t = prism.Triangles;
+        var walls = Enumerable.Range(0, t.Length / 3)
+            .Count(i => (t[i * 3] % 2) + (t[(i * 3) + 1] % 2) + (t[(i * 3) + 2] % 2) is 1 or 2);
+
+        Check.Equal(2 * (4 + 4 + 4), walls);
+        Check.Equal(3 * 4, prism.VertexCount / 2);
+
+        // Both counters were bridged to the same corner, and joining the second at the wrong visit
+        // of it overlapped the cap's triangles: a cap that covers the letter exactly once has
+        // exactly its volume.
+        Check.Close(100 - 8, Fixtures.VolumeOf(prism), 1e-9);
+    }
+
+    [Fact]
     public void A_prism_on_a_curved_surface_follows_it()
     {
         // A label wrapped around the side of a cylinder: every bottom vertex must sit on the
@@ -152,6 +200,122 @@ public sealed class DecalTests
         {
             Check.Close(0, (viaMesh.Mesh.Vertices[i] - viaIndex.Mesh.Vertices[i]).Length, 1e-12);
         }
+    }
+
+    [Fact]
+    public void A_label_wrapped_onto_a_faceted_scan_keeps_its_cap_the_right_way_up()
+    {
+        // Each point used to settle onto the plane of its own nearest facet and stand its column
+        // along that facet's normal. Neighbours either side of a facet edge then landed out of
+        // order or leaned apart, the cap triangle between them turned over, and the label showed
+        // holes through to the model - on most placements on a real scan, while every check of
+        // the prism's topology still passed.
+        var scan = Assets.LoadBench("scalp_bolus.stl");
+        using var index = Fixtures.Engine.Spatial.BuildIndex(scan).Value;
+        var outlines = GlyphLikeOutlines();
+
+        var flat = Fixtures.Engine.Decals.BuildPrism(new DecalPrismSpec(outlines, Flat, 0.8, -0.05, 0.05, MaxEdgeLength: 1.25)).Value;
+
+        var placements = 0;
+        for (var x = -45.0; x <= 45; x += 15)
+        {
+            for (var y = -55.0; y <= -10; y += 15)
+            {
+                var hit = index.Raycast(new Vec3(x, y, 300), Direction.From(-Vec3.UnitZ).Value);
+                if (!hit.HasValue)
+                {
+                    continue;
+                }
+
+                var normal = hit.Value.Normal.Z < 0 ? -hit.Value.Normal : hit.Value.Normal;
+                if (normal.Z < 0.6)
+                {
+                    continue; // Too far down the side: the label would hang off the rim.
+                }
+
+                foreach (var degrees in new[] { 0.0, 37.0, 90.0 })
+                {
+                    var prism = Fixtures.Engine.Decals.BuildPrism(new DecalPrismSpec(
+                        outlines, FrameAt(hit.Value.Point, normal, degrees), 0.8, -0.05, 0.05,
+                        MaxEdgeLength: 1.25, SurfaceIndex: Maybe<ISpatialIndex>.Some(index))).Value;
+
+                    AssertCapIsTheRightWayUp(prism, flat, $"at ({x}, {y}) turned {degrees} degrees");
+                    placements++;
+                }
+            }
+        }
+
+        Check.GreaterOrEqual(placements, 30);
+    }
+
+    /// <summary>
+    /// Every top cap triangle faces the way its columns rise. <paramref name="flat"/> is the same
+    /// prism on a plane, with the same vertex order, so slivers can be told apart: their
+    /// orientation is rounding noise, and they have no area to show a hole through.
+    /// </summary>
+    private static void AssertCapIsTheRightWayUp(IMesh prism, IMesh flat, string where)
+    {
+        const double minimumAltitude = 0.05;
+
+        var v = prism.Vertices;
+        var t = prism.Triangles;
+        for (var i = 0; i < t.Length; i += 3)
+        {
+            int a = t[i], b = t[i + 1], c = t[i + 2];
+
+            // The builder interleaves a bottom and a top copy of every point, so a triangle whose
+            // corners are all odd is on the top cap.
+            if (a % 2 == 0 || b % 2 == 0 || c % 2 == 0)
+            {
+                continue;
+            }
+
+            var (fa, fb, fc) = (flat.Vertices[a], flat.Vertices[b], flat.Vertices[c]);
+            var longest = Math.Max((fb - fa).Length, Math.Max((fc - fb).Length, (fa - fc).Length));
+            var planarArea = (fb - fa).Cross(fc - fa).Length / 2;
+            if (2 * planarArea / longest < minimumAltitude)
+            {
+                continue;
+            }
+
+            var rise = (v[a] - v[a - 1]) + (v[b] - v[b - 1]) + (v[c] - v[c - 1]);
+            var facing = (v[b] - v[a]).Cross(v[c] - v[a]);
+            Check.True(facing.Dot(rise) > 0, $"A cap triangle of area {planarArea:F3} turned over {where}.");
+        }
+    }
+
+    private static SurfaceFrame FrameAt(Vec3 origin, Vec3 normal, double degrees)
+    {
+        var u = Vec3.UnitX - (normal * normal.Dot(Vec3.UnitX));
+        u /= u.Length;
+        var w = normal.Cross(u);
+        var radians = degrees * Math.PI / 180;
+        u = (u * Math.Cos(radians)) + (w * Math.Sin(radians));
+        return new SurfaceFrame(origin, u, normal.Cross(u), normal);
+    }
+
+    /// <summary>
+    /// About the size and make-up of a 10mm bold word: a round letter, a letter with two
+    /// counters, a pointed one with a counter, and a plain stroke, side by side.
+    /// </summary>
+    private static ImmutableArray<PlanarPolygon> GlyphLikeOutlines()
+    {
+        static ImmutableArray<Vec2> Circle(double cx, double cy, double r, bool clockwise)
+        {
+            var ring = Enumerable.Range(0, 48)
+                .Select(i => new Vec2(cx + (r * Math.Cos(i * Math.PI / 24)), cy + (r * Math.Sin(i * Math.PI / 24))));
+            return clockwise ? [.. ring.Reverse()] : [.. ring];
+        }
+
+        return
+        [
+            new PlanarPolygon(Circle(-12, 0, 5, false), [Circle(-12, 0, 2.6, true)]),
+            new PlanarPolygon(Assets.Square(-6, -5, 7.5), [Assets.Square(-3.5, -3, 3, true), Assets.Square(-3.5, 1, 3, true)]),
+            new PlanarPolygon(
+                [new Vec2(3, -5), new Vec2(6, -5), new Vec2(7, -2), new Vec2(9.5, -2), new Vec2(10.5, -5), new Vec2(13.5, -5), new Vec2(10, 5), new Vec2(6.5, 5)],
+                [[new Vec2(7.8, 0.2), new Vec2(8.25, 2), new Vec2(8.7, 0.2)]]),
+            PlanarPolygon.FromOuter([new Vec2(15, -5), new Vec2(17.5, -5), new Vec2(17.5, 5), new Vec2(15, 5)]),
+        ];
     }
 
     [Fact]

@@ -19,7 +19,7 @@ public sealed record BuildPrismRequest(DecalPrismSpec Spec);
 /// Triangulates the outlines and raises each point into a column along the local normal. Without
 /// a surface the columns stand on the frame's plane. With one, the frame is first walked along
 /// the surface in both directions to make a baseline that follows its curvature, and each point
-/// is placed off that baseline and settled onto the nearest part of the surface - so a label
+/// is placed off that baseline and settled onto the surface along the baseline's normal - so a label
 /// wraps around a curve rather than cutting through it on a chord.
 ///
 /// Distances are in the model's units and tuned for millimetres: the baseline is sampled every
@@ -27,11 +27,11 @@ public sealed record BuildPrismRequest(DecalPrismSpec Spec);
 /// </summary>
 internal sealed class BuildPrismHandler
 {
-    /// <summary>How close to the baseline a point sits to be placed on it directly rather than settled.</summary>
-    private const double BaselineTolerance = 1e-4;
-
     /// <summary>Distance between baseline samples. Smaller follows curvature more closely at the cost of more queries.</summary>
     private const double BaselineStep = 0.5;
+
+    /// <summary>How far behind a point the rays settling it start: well above rounding, well below any feature.</summary>
+    private const double SettleBackoff = 1e-3;
 
     /// <summary>Baseline marched past each end of the text, so glyphs at the extremes still sample a frame either side.</summary>
     private const double BaselineMargin = 2.0;
@@ -115,52 +115,71 @@ internal sealed class BuildPrismHandler
             new MeshMetadata("decal prism", "GeometryEngine.Decals.BuildPrism"));
     }
 
+    /// <remarks>
+    /// Neighbouring points must land in the same order they started in, or the cap triangle
+    /// between them turns over and the label shows a hole. Two things here keep that true.
+    ///
+    /// Each point is settled onto the surface along the baseline's normal at its X. Rays that are
+    /// parallel, or nearly so, cross a faceted surface in the order they left. Sliding each point
+    /// onto the plane of its own nearest facet does not keep that order: a plane extended past its
+    /// facet's edge can carry a point over the neighbour that settled on the next facet along.
+    ///
+    /// The column through each point leans along that same normal, not along the normal of the
+    /// facet the point landed on. Facet normals jump at every edge of the surface, so two points a
+    /// fraction of a millimetre apart either side of one leaned their columns apart by the angle
+    /// between the facets, and over the height of an emboss that is enough to carry one top
+    /// corner past its neighbour. Blending the facets' corner normals is no better: next to a
+    /// crease or along a sliver facet they turn just as sharply. The baseline's normal changes
+    /// gradually along X, and not at all along Y.
+    /// </remarks>
     private static void PlaceOnSurface(SpatialIndex index, SurfaceFrame frame, List<Vec2> points, Vec3[] surfacePoints, Vec3[] normals)
     {
         // Seeded from the first point, not from 0: seeding at 0 forces the range to straddle the
         // origin, which silently widens the baseline for outlines not already centred on it.
         var minX = points.Min(p => p.X);
         var maxX = points.Max(p => p.X);
-        var baseline = Baseline(index.Tree, frame, minX, maxX);
+        var tree = index.Tree;
+        var baseline = Baseline(tree, frame, minX, maxX);
 
-        var proposed = new Vec3[points.Count];
-        var frames = new BaselineFrame[points.Count];
-        for (var i = 0; i < points.Count; i++)
+        Parallel.For(0, points.Count, i =>
         {
-            frames[i] = Sample(baseline, points[i].X);
-            proposed[i] = frames[i].Position + (frames[i].V * points[i].Y);
+            var sample = Sample(baseline, points[i].X);
+            var proposed = sample.Position + (sample.V * points[i].Y);
+
+            // How far off the surface a point may sit and still be this label's: the surface can
+            // fall away from the baseline's tangent by up to its distance from the baseline.
+            var reach = BaselineStep + Math.Abs(points[i].Y);
+
+            // Where nothing is in reach the label overhangs the surface, and carries on along the
+            // baseline's tangent.
+            surfacePoints[i] = Settle(tree, proposed, sample.N, reach) ?? proposed;
+            normals[i] = sample.N;
+        });
+    }
+
+    /// <summary>
+    /// The nearest point of the surface on the line through <paramref name="point"/> along
+    /// <paramref name="normal"/>, looking both ways - the point may sit above a convex surface or
+    /// below a concave one. Null when nothing is within <paramref name="reach"/>.
+    /// </summary>
+    private static Vec3? Settle(MeshBvh surface, Vec3 point, Vec3 normal, double reach)
+    {
+        // Each ray starts a hair behind the point. On a flat face the point is already on the
+        // surface, and a ray starting there misses it - so the label sank through to whatever
+        // was behind, the far wall of a mould.
+        var down = surface.Raycast(point + (normal * SettleBackoff), -normal, out var below, out _)
+            ? below - SettleBackoff
+            : double.MaxValue;
+        var up = surface.Raycast(point - (normal * SettleBackoff), normal, out var above, out _)
+            ? above - SettleBackoff
+            : double.MaxValue;
+
+        if (Math.Min(Math.Abs(down), Math.Abs(up)) > reach)
+        {
+            return null;
         }
 
-        // Every off-baseline point asks the same question of the surface independently: one batch.
-        var nearest = index.ClosestPoints(proposed);
-
-        for (var i = 0; i < points.Count; i++)
-        {
-            if (Math.Abs(points[i].Y) < BaselineTolerance)
-            {
-                surfacePoints[i] = frames[i].Position;
-                normals[i] = frames[i].N;
-                continue;
-            }
-
-            if (nearest[i].Triangle < 0)
-            {
-                surfacePoints[i] = proposed[i];
-                normals[i] = frames[i].N;
-                continue;
-            }
-
-            var normal = nearest[i].Normal == Vec3.Zero ? frames[i].N : nearest[i].Normal;
-            if (normal.Dot(frames[i].N) < 0)
-            {
-                normal = -normal;
-            }
-
-            // Slide onto the plane of the nearest triangle along its normal.
-            var (corner, _, _) = index.Tree.Triangle(nearest[i].Triangle);
-            surfacePoints[i] = proposed[i] - (normal * (proposed[i] - corner).Dot(normal));
-            normals[i] = normal;
-        }
+        return Math.Abs(down) <= Math.Abs(up) ? point - (normal * down) : point + (normal * up);
     }
 
     private static PlanarPolygon Subdivide(PlanarPolygon polygon, double maxEdge) =>
