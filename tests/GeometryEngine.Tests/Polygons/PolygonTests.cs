@@ -157,6 +157,186 @@ public sealed class PolygonTests
     }
 
     [Fact]
+    public void The_convex_hull_of_points_is_exact_and_counter_clockwise()
+    {
+        // A square's corners, an interior point and a point on an edge: neither of the last two
+        // is a corner of the hull.
+        var hull = Polygons.ConvexHull([
+            new Vec2(10, 10), new Vec2(0, 0), new Vec2(5, 5), new Vec2(10, 0), new Vec2(5, 0), new Vec2(0, 10)]).Value;
+
+        Check.Equal(4, hull.Outer.Length);
+        Check.Close(100, hull.SignedArea, 1e-12);
+    }
+
+    [Fact]
+    public void Points_spanning_no_area_have_no_hull()
+    {
+        Check.Equal("Polygons.DegenerateHull", Polygons.ConvexHull([new Vec2(1, 1)]).Error.Code);
+        Check.Equal("Polygons.DegenerateHull", Polygons.ConvexHull([Vec2.Zero, new Vec2(1, 1), new Vec2(2, 2)]).Error.Code);
+        Check.Equal("Polygons.DegenerateHull", Polygons.ConvexHull([]).Error.Code);
+    }
+
+    [Fact]
+    public void Overlapping_squares_intersect_in_their_shared_corner()
+    {
+        var shared = Polygons.Intersect(
+            PlanarPolygon.FromOuter(Assets.Square(0, 0, 10)),
+            PlanarPolygon.FromOuter(Assets.Square(5, 5, 10, clockwise: true))).Value;
+
+        Check.Equal(1, shared.Length);
+        Check.Close(25, shared[0].Area, 1e-6);
+    }
+
+    [Fact]
+    public void Polygons_that_do_not_overlap_intersect_in_nothing()
+    {
+        var shared = Polygons.Intersect(
+            PlanarPolygon.FromOuter(Assets.Square(0, 0, 1)),
+            PlanarPolygon.FromOuter(Assets.Square(5, 5, 1))).Value;
+
+        Check.Equal(0, shared.Length);
+    }
+
+    [Fact]
+    public void An_intersection_keeps_every_island_and_respects_holes()
+    {
+        // A bar across a frame: it crosses the frame's wall twice and its hole once, so two
+        // islands, and the hole's span is missing from both.
+        var frame = new PlanarPolygon(Assets.Square(0, 0, 10), [Assets.Square(2, 2, 6)]);
+        var bar = PlanarPolygon.FromOuter([new Vec2(-1, 4), new Vec2(11, 4), new Vec2(11, 6), new Vec2(-1, 6)]);
+
+        var shared = Polygons.Intersect(frame, bar).Value;
+
+        Check.Equal(2, shared.Length);
+        Check.Close(8, shared.Sum(p => p.Area), 1e-6);
+    }
+
+    [Fact]
+    public void Subtracting_a_polygon_from_inside_another_leaves_a_hole()
+    {
+        var frame = Polygons.Subtract(
+            PlanarPolygon.FromOuter(Assets.Square(0, 0, 10)),
+            PlanarPolygon.FromOuter(Assets.Square(3, 3, 4))).Value;
+
+        Check.Equal(1, frame.Length);
+        Check.Equal(1, frame[0].Holes.Length);
+        Check.Close(84, frame[0].Area, 1e-6);
+    }
+
+    [Fact]
+    public void Subtracting_a_covering_polygon_leaves_nothing()
+    {
+        var left = Polygons.Subtract(
+            PlanarPolygon.FromOuter(Assets.Square(1, 1, 2)),
+            PlanarPolygon.FromOuter(Assets.Square(0, 0, 10))).Value;
+
+        Check.Equal(0, left.Length);
+    }
+
+    [Fact]
+    public void Loops_group_into_outlines_holes_and_islands_whatever_their_order()
+    {
+        // An "O" with a dot in its counter, handed over innermost first and all wound the same way.
+        var dot = Assets.Square(4, 4, 2);
+        var counter = Assets.Square(2, 2, 6);
+        var ring = Assets.Square(0, 0, 10);
+
+        var polygons = Polygons.FromLoops([dot, counter, ring]);
+
+        Check.Equal(2, polygons.Length);
+
+        var o = polygons.Single(p => p.Holes.Length == 1);
+        Check.Close(64, o.Area, 1e-12);
+        Check.Greater(o.SignedArea, 0);
+        Check.Less(PlanarPolygon.SignedAreaOf(o.Holes[0]), 0);
+
+        Check.Close(4, polygons.Single(p => p.Holes.Length == 0).Area, 1e-12);
+    }
+
+    [Fact]
+    public void Loops_with_no_area_are_dropped()
+    {
+        var polygons = Polygons.FromLoops([[Vec2.Zero, new Vec2(1, 1), new Vec2(2, 2)], [Vec2.Zero, Vec2.Zero]]);
+
+        Check.Equal(0, polygons.Length);
+    }
+
+    [Fact]
+    public void Slicing_a_box_gives_its_footprint()
+    {
+        var slice = Polygons.Slice(Fixtures.Box(new Vec3(1, 2, 0), new Vec3(5, 4, 3)), 1.5).Value;
+
+        Check.Equal(1, slice.Length);
+        Check.Close(8, slice[0].Area, 1e-12);
+        Check.Greater(slice[0].SignedArea, 0);
+    }
+
+    [Fact]
+    public void Slicing_a_sphere_off_centre_gives_the_smaller_circle()
+    {
+        // At height 3 on a radius-5 sphere the circle has radius 4. The faceted sphere sits just
+        // inside its true surface, so the area comes in slightly under.
+        var slice = Polygons.Slice(Fixtures.Sphere(Vec3.Zero, 5, 96), 3).Value;
+
+        Check.Equal(1, slice.Length);
+        Check.RelativelyClose(Math.PI * 16, slice[0].Area, 0.01);
+    }
+
+    [Fact]
+    public void Slicing_a_hollow_solid_gives_its_cavity_as_a_hole()
+    {
+        var hollow = Fixtures.Engine.Booleans.Subtract(Fixtures.Cube(0, 10), Fixtures.Cube(3, 4)).Value;
+
+        var slice = Polygons.Slice(hollow, 5).Value;
+
+        Check.Equal(1, slice.Length);
+        Check.Equal(1, slice[0].Holes.Length);
+        Check.Close(100 - 16, slice[0].Area, 1e-9);
+    }
+
+    [Fact]
+    public void Separate_solids_slice_into_separate_polygons()
+    {
+        var pair = Fixtures.Engine.Booleans.Union([
+            Fixtures.Box(Vec3.Zero, new Vec3(2, 2, 2)),
+            Fixtures.Box(new Vec3(5, 0, 0), new Vec3(7, 2, 2))]).Value;
+
+        var slice = Polygons.Slice(pair, 1).Value;
+
+        Check.Equal(2, slice.Length);
+        Check.Close(8, slice.Sum(p => p.Area), 1e-12);
+    }
+
+    [Fact]
+    public void A_plane_that_misses_the_mesh_slices_nothing()
+    {
+        Check.Equal(0, Polygons.Slice(Fixtures.UnitCube(), 5).Value.Length);
+    }
+
+    [Fact]
+    public void A_mesh_that_repeats_its_corners_per_triangle_still_closes()
+    {
+        // Every triangle with its own three vertices, as an unwelded STL arrives.
+        var cube = Fixtures.UnitCube();
+        var soup = ImmutableMesh.Create(
+            [.. Enumerable.Range(0, cube.TriangleCount).SelectMany(t => { var (a, b, c) = cube.TriangleAt(t); return new[] { a, b, c }; })],
+            [.. Enumerable.Range(0, cube.TriangleCount * 3)],
+            MeshMetadata.Named("soup")).Value;
+
+        var slice = Polygons.Slice(soup, 0.5).Value;
+
+        Check.Equal(1, slice.Length);
+        Check.Close(1, slice[0].Area, 1e-12);
+    }
+
+    [Fact]
+    public void A_face_resting_on_the_plane_is_not_cut()
+    {
+        // The plane at exactly the box's top: the top face lies in it, and nothing is above it.
+        Check.Equal(0, Polygons.Slice(Fixtures.UnitCube(), 1).Value.Length);
+    }
+
+    [Fact]
     public void The_convex_hull_of_a_spheres_shadow_is_nearly_its_disc()
     {
         var hull = Polygons.ProjectConvexHull(Fixtures.Sphere(Vec3.Zero, 20, 64)).Value;

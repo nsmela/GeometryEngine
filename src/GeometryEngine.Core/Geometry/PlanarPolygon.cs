@@ -14,6 +14,9 @@ public sealed record PlanarPolygon(ImmutableArray<Vec2> Outer, ImmutableArray<Im
     /// <summary>Signed area of the outer boundary: positive when it winds counter-clockwise.</summary>
     public double SignedArea => SignedAreaOf(Outer);
 
+    /// <summary>The area enclosed: the outer boundary's less its holes', whichever way each is wound.</summary>
+    public double Area => Math.Abs(SignedArea) - Holes.Sum(hole => Math.Abs(SignedAreaOf(hole)));
+
     public static double SignedAreaOf(ImmutableArray<Vec2> ring)
     {
         var sum = 0.0;

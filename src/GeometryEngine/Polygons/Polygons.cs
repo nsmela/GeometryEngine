@@ -24,6 +24,10 @@ internal static class PolygonErrors
 
     public static readonly Error InvertedExtrusion = new("Polygons.InvertedExtrusion", "An extrusion's top must lie above its bottom.");
 
+    public static readonly Error NonFiniteHeight = new("Polygons.NonFiniteHeight", "A slice needs a finite height.");
+
+    public static readonly Error DegenerateHull = new("Polygons.DegenerateHull", "The points span no area, so they have no hull: fewer than three of them, or all in a line.");
+
     public static Error ExtrusionFailed(string detail) => new("Polygons.ExtrusionFailed", detail);
 }
 
@@ -46,6 +50,46 @@ internal static class ClipperBridge
 
     /// <summary>The largest contour by area - the one footprint every consumer of these wants.</summary>
     public static Path64 Largest(Paths64 paths) => paths.OrderByDescending(path => Math.Abs(Clipper.Area(path))).First();
+
+    /// <summary>The outline and every hole, for a fill rule that tells them apart by nesting.</summary>
+    public static Paths64 ToPaths(PlanarPolygon polygon)
+    {
+        var paths = new Paths64 { ToPath(polygon.Outer) };
+        foreach (var hole in polygon.Holes.Where(hole => hole.Length >= 3))
+        {
+            paths.Add(ToPath(hole));
+        }
+
+        return paths;
+    }
+
+    /// <summary>
+    /// Every region of a clipping result as a polygon of its own, holes attached. A tree rather
+    /// than flat paths, because Clipper hands back outlines and holes interleaved and only the
+    /// tree says which hole belongs to which outline. An island inside a hole is a region too.
+    /// </summary>
+    public static ImmutableArray<PlanarPolygon> FromTree(PolyTree64 tree)
+    {
+        var polygons = ImmutableArray.CreateBuilder<PlanarPolygon>();
+        CollectOutlines(tree, polygons);
+        return polygons.ToImmutable();
+    }
+
+    private static void CollectOutlines(PolyPath64 parent, ImmutableArray<PlanarPolygon>.Builder polygons)
+    {
+        for (var i = 0; i < parent.Count; i++)
+        {
+            var outline = parent[i];
+            var holes = ImmutableArray.CreateBuilder<ImmutableArray<Vec2>>(outline.Count);
+            for (var j = 0; j < outline.Count; j++)
+            {
+                holes.Add(FromPath(outline[j].Polygon!));
+                CollectOutlines(outline[j], polygons);
+            }
+
+            polygons.Add(new PlanarPolygon(FromPath(outline.Polygon!), holes.ToImmutable()));
+        }
+    }
 }
 
 /// <summary>
@@ -163,6 +207,222 @@ internal sealed class ProjectConvexHullHandler
 
         return PlanarPolygon.FromOuter(OutlineSmoothing.Smooth(ring));
     }
+}
+
+/// <summary>Ask for the convex hull of a set of points.</summary>
+public sealed record ConvexHullRequest(ImmutableArray<Vec2> Points);
+
+/// <summary>
+/// The exact hull, unlike <see cref="ProjectConvexHullHandler"/>: those points are a scan's
+/// shadow and want smoothing, these are placed deliberately and every one matters.
+/// </summary>
+internal sealed class ConvexHullHandler
+{
+    public Result<PlanarPolygon> Handle(ConvexHullRequest request)
+    {
+        var points = request.Points.IsDefault ? [] : request.Points.Where(point => point.IsFinite).ToList();
+        if (points.Count < 3)
+        {
+            return PolygonErrors.DegenerateHull;
+        }
+
+        var factory = new GeometryFactory();
+        var geometry = new ConvexHull([.. points.Select(p => new Coordinate(p.X, p.Y))], factory).GetConvexHull();
+
+        // Points in a line hull to a segment, and one point to itself: neither encloses anything.
+        if (geometry is not Polygon polygon)
+        {
+            return PolygonErrors.DegenerateHull;
+        }
+
+        var ring = polygon.Shell.Coordinates.Select(c => new Vec2(c.X, c.Y)).ToList();
+        ring.RemoveAt(ring.Count - 1); // the shell repeats its first point to close
+
+        if (PlanarPolygon.SignedAreaOf([.. ring]) < 0)
+        {
+            ring.Reverse();
+        }
+
+        return PlanarPolygon.FromOuter([.. ring]);
+    }
+}
+
+/// <summary>Ask for the region two polygons share.</summary>
+public sealed record IntersectPolygonsRequest(PlanarPolygon A, PlanarPolygon B);
+
+/// <summary>Ask for the region of one polygon outside another.</summary>
+public sealed record SubtractPolygonsRequest(PlanarPolygon A, PlanarPolygon B);
+
+/// <summary>
+/// Set operations between two polygons, holes included. Every region of the result comes back,
+/// where offsets and unions keep only the largest: those build one footprint, but a set
+/// operation that dropped an island would give the wrong answer rather than a tidier one.
+/// </summary>
+internal sealed class ClipPolygonsHandler
+{
+    public Result<ImmutableArray<PlanarPolygon>> Handle(IntersectPolygonsRequest request) =>
+        Clip(request.A, request.B, ClipType.Intersection);
+
+    public Result<ImmutableArray<PlanarPolygon>> Handle(SubtractPolygonsRequest request) =>
+        Clip(request.A, request.B, ClipType.Difference);
+
+    private static Result<ImmutableArray<PlanarPolygon>> Clip(PlanarPolygon a, PlanarPolygon b, ClipType operation)
+    {
+        ArgumentNullException.ThrowIfNull(a);
+        ArgumentNullException.ThrowIfNull(b);
+
+        if (a.Outer.Length < 3 || b.Outer.Length < 3)
+        {
+            return PolygonErrors.TooFewPoints;
+        }
+
+        // Even-odd tells an outline from its holes by nesting alone, so neither polygon has to
+        // arrive wound a particular way round.
+        var tree = new PolyTree64();
+        Clipper.BooleanOp(operation, ClipperBridge.ToPaths(a), ClipperBridge.ToPaths(b), tree, FillRule.EvenOdd);
+
+        return ClipperBridge.FromTree(tree);
+    }
+}
+
+/// <summary>Ask for the outline a horizontal plane cuts through a mesh.</summary>
+public sealed record SliceRequest(IMesh Mesh, double Height);
+
+/// <summary>
+/// Cuts every triangle that straddles the plane into a segment between the two edges it crosses,
+/// then chains the segments into loops through the edges they share.
+///
+/// A crossing point is computed from its edge alone, endpoints taken in a fixed order, so the two
+/// triangles either side of an edge produce the very same point and the chain closes exactly
+/// rather than to within a tolerance. Edges are keyed by their endpoints' positions rather than
+/// their indices, so a mesh that repeats a corner per triangle chains as well as a welded one.
+/// A vertex lying exactly on the plane is counted as below it - any consistent choice gives
+/// closed loops, and this one keeps a face resting on the plane out of the cut.
+///
+/// Only closed loops are kept. An open surface, or a non-manifold edge, leaves chains that do
+/// not close, and an outline with a gap in it is not a polygon.
+/// </summary>
+internal sealed class SliceHandler
+{
+    public Result<ImmutableArray<PlanarPolygon>> Handle(SliceRequest request)
+    {
+        ArgumentNullException.ThrowIfNull(request.Mesh);
+
+        if (request.Mesh.IsEmpty)
+        {
+            return MeshErrors.EmptyOperand;
+        }
+
+        if (!double.IsFinite(request.Height))
+        {
+            return PolygonErrors.NonFiniteHeight;
+        }
+
+        var mesh = request.Mesh;
+        var height = request.Height;
+        var nodes = new Dictionary<(Vec3, Vec3), int>();
+        var points = new List<Vec2>();
+        var segmentsAt = new List<List<int>>();
+        var segments = new List<(int A, int B)>();
+
+        int Node(Vec3 p, Vec3 q)
+        {
+            var key = Compare(p, q) < 0 ? (p, q) : (q, p);
+            if (!nodes.TryGetValue(key, out var node))
+            {
+                node = points.Count;
+                nodes[key] = node;
+                var t = (height - key.Item1.Z) / (key.Item2.Z - key.Item1.Z);
+                var crossing = key.Item1.LerpTo(key.Item2, t);
+                points.Add(new Vec2(crossing.X, crossing.Y));
+                segmentsAt.Add([]);
+            }
+
+            return node;
+        }
+
+        for (var t = 0; t < mesh.TriangleCount; t++)
+        {
+            var (a, b, c) = mesh.TriangleAt(t);
+            var corners = new[] { a, b, c };
+
+            var crossings = new List<int>(2);
+            for (var i = 0; i < 3; i++)
+            {
+                var p = corners[i];
+                var q = corners[(i + 1) % 3];
+                if ((p.Z > height) != (q.Z > height))
+                {
+                    crossings.Add(Node(p, q));
+                }
+            }
+
+            if (crossings.Count != 2 || crossings[0] == crossings[1])
+            {
+                continue;
+            }
+
+            var segment = segments.Count;
+            segments.Add((crossings[0], crossings[1]));
+            segmentsAt[crossings[0]].Add(segment);
+            segmentsAt[crossings[1]].Add(segment);
+        }
+
+        var loops = ImmutableArray.CreateBuilder<ImmutableArray<Vec2>>();
+        var used = new bool[segments.Count];
+
+        for (var start = 0; start < segments.Count; start++)
+        {
+            if (used[start])
+            {
+                continue;
+            }
+
+            var loop = ImmutableArray.CreateBuilder<Vec2>();
+            var (first, node) = segments[start];
+            var segment = start;
+            var closed = false;
+
+            while (true)
+            {
+                used[segment] = true;
+                loop.Add(points[node]);
+
+                if (node == first)
+                {
+                    closed = true;
+                    break;
+                }
+
+                // Each crossing edge is shared by exactly two straddling triangles on a closed
+                // surface. Anything else is a boundary or a non-manifold edge, and the chain is open.
+                var here = segmentsAt[node];
+                if (here.Count != 2)
+                {
+                    break;
+                }
+
+                segment = here[0] == segment ? here[1] : here[0];
+                if (used[segment])
+                {
+                    break;
+                }
+
+                var (p, q) = segments[segment];
+                node = p == node ? q : p;
+            }
+
+            if (closed && loop.Count >= 3)
+            {
+                loops.Add(loop.ToImmutable());
+            }
+        }
+
+        return PolygonOperations.Nested(loops.ToImmutable());
+    }
+
+    private static int Compare(Vec3 p, Vec3 q) =>
+        p.X != q.X ? p.X.CompareTo(q.X) : p.Y != q.Y ? p.Y.CompareTo(q.Y) : p.Z.CompareTo(q.Z);
 }
 
 /// <summary>Ask for a polygon grown or inset.</summary>
@@ -365,6 +625,9 @@ internal sealed class PolygonOperations : IPolygonOperations
 {
     private readonly ProjectOutlineHandler _outline = new();
     private readonly ProjectConvexHullHandler _hull = new();
+    private readonly ConvexHullHandler _pointHull = new();
+    private readonly ClipPolygonsHandler _clip = new();
+    private readonly SliceHandler _slice = new();
     private readonly OffsetPolygonHandler _offset = new();
     private readonly BufferPathHandler _buffer = new();
     private readonly UnionPolygonsHandler _union = new();
@@ -374,6 +637,14 @@ internal sealed class PolygonOperations : IPolygonOperations
     public Result<PlanarPolygon> ProjectOutline(IMesh mesh) => _outline.Handle(new ProjectOutlineRequest(mesh));
 
     public Result<PlanarPolygon> ProjectConvexHull(IMesh mesh) => _hull.Handle(new ProjectConvexHullRequest(mesh));
+
+    public Result<PlanarPolygon> ConvexHull(ImmutableArray<Vec2> points) => _pointHull.Handle(new ConvexHullRequest(points));
+
+    public Result<ImmutableArray<PlanarPolygon>> Intersect(PlanarPolygon a, PlanarPolygon b) =>
+        _clip.Handle(new IntersectPolygonsRequest(a, b));
+
+    public Result<ImmutableArray<PlanarPolygon>> Subtract(PlanarPolygon a, PlanarPolygon b) =>
+        _clip.Handle(new SubtractPolygonsRequest(a, b));
 
     public Result<PlanarPolygon> Offset(PlanarPolygon polygon, double distance) =>
         _offset.Handle(new OffsetPolygonRequest(polygon, distance));
@@ -402,4 +673,33 @@ internal sealed class PolygonOperations : IPolygonOperations
 
         return new PlanarPolygon(Mirror(polygon.Outer), [.. polygon.Holes.Select(Mirror)]);
     }
+
+    /// <summary>
+    /// The same nesting the triangulator reads its contours by, so a polygon built here
+    /// triangulates and extrudes exactly as its loops would have. Outlines come back
+    /// counter-clockwise and holes clockwise - not required by anything here, but it is what a
+    /// consumer drawing them would otherwise have to settle itself.
+    /// </summary>
+    public ImmutableArray<PlanarPolygon> FromLoops(ImmutableArray<ImmutableArray<Vec2>> loops) => Nested(loops);
+
+    public Result<ImmutableArray<PlanarPolygon>> Slice(IMesh mesh, double height) =>
+        _slice.Handle(new SliceRequest(mesh, height));
+
+    /// <summary><see cref="FromLoops"/>, for the slices that produce loops of their own.</summary>
+    internal static ImmutableArray<PlanarPolygon> Nested(ImmutableArray<ImmutableArray<Vec2>> loops)
+    {
+        if (loops.IsDefaultOrEmpty)
+        {
+            return [];
+        }
+
+        var contours = loops.Where(loop => !loop.IsDefault).Select(loop => (IReadOnlyList<Vec2>)loop).ToList();
+
+        return [.. PolygonTriangulator.Nest(contours).Select(group => new PlanarPolygon(
+            Wound(group.Outer, counterClockwise: true),
+            [.. group.Holes.Select(hole => Wound(hole, counterClockwise: false))]))];
+    }
+
+    private static ImmutableArray<Vec2> Wound(List<Vec2> ring, bool counterClockwise) =>
+        PolygonTriangulator.SignedArea(ring) > 0 == counterClockwise ? [.. ring] : [.. Enumerable.Reverse(ring)];
 }

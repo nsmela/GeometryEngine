@@ -328,7 +328,11 @@ internal sealed class DrapedPathHandler(BufferPathHandler buffer)
             return PathGeneratorErrors.TriangulationFailed;
         }
 
-        var surface = spec.Surface.HasValue && !spec.Surface.Value.IsEmpty ? new MeshBvh(spec.Surface.Value) : null;
+        // The surface's own index: a painted channel is redrawn on every stroke against the same
+        // bolus, and baked again against it when the mould is built.
+        var surface = spec.Surface.HasValue && !spec.Surface.Value.IsEmpty
+            ? Spatial.SharedIndexes.For(spec.Surface.Value).Inner.Tree
+            : null;
 
         var bottoms = new Vec3[points.Count];
         var tops = new Vec3[points.Count];

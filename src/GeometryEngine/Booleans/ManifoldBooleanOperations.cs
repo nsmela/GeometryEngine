@@ -37,6 +37,91 @@ internal sealed class ManifoldBooleanOperations(IBooleans? fallback = null) : IB
     public Result<IMesh> Intersect(IMesh meshA, IMesh meshB) =>
         Run(meshA, meshB, "Intersect", ManifoldKernel.Intersect, static (f, a, b) => f.Intersect(a, b));
 
+    public Result<IMesh> Union(ImmutableArray<IMesh> meshes)
+    {
+        meshes = meshes.IsDefault ? [] : meshes;
+        var operands = BooleanOperands.Validate(meshes);
+        if (operands.IsFailure)
+        {
+            return Result.Failure<IMesh>(operands.Error);
+        }
+
+        return meshes.Length == 1
+            ? Result.Success(meshes[0])
+            : RunBatch(meshes, "Union", ManifoldOpType.Add, f => f.Union(meshes));
+    }
+
+    public Result<IMesh> Subtract(IMesh mesh, ImmutableArray<IMesh> tools)
+    {
+        tools = tools.IsDefault ? [] : tools;
+        ImmutableArray<IMesh> operands = [mesh, .. tools];
+        var valid = BooleanOperands.Validate(operands);
+        if (valid.IsFailure)
+        {
+            return Result.Failure<IMesh>(valid.Error);
+        }
+
+        return tools.IsEmpty
+            ? Result.Success(mesh)
+            : RunBatch(operands, "Subtract", ManifoldOpType.Subtract, f => f.Subtract(mesh, tools));
+    }
+
+    public Result<MeshSplit> Split(IMesh mesh, Plane plane)
+    {
+        ArgumentNullException.ThrowIfNull(mesh);
+        ArgumentNullException.ThrowIfNull(plane);
+
+        if (mesh.IsEmpty)
+        {
+            return Result.Failure<MeshSplit>(BooleanErrors.EmptyOperand);
+        }
+
+        var result = ManifoldKernel.Split(
+            mesh, plane, BooleanOperands.DescribeHalf(mesh, "front"), BooleanOperands.DescribeHalf(mesh, "back"));
+
+        if (result.IsSuccess)
+        {
+            return new MeshSplit(Produced(result.Value.Front), Produced(result.Value.Back));
+        }
+
+        if (_fallback is null || !ShouldFallBack(result.Error))
+        {
+            return Result.Failure<MeshSplit>(result.Error);
+        }
+
+        var fallen = _fallback.Split(mesh, plane);
+        return fallen.IsFailure
+            ? fallen
+            : new MeshSplit(FellBack(fallen.Value.Front), FellBack(fallen.Value.Back));
+    }
+
+    private Result<IMesh> RunBatch(
+        ImmutableArray<IMesh> operands,
+        string operation,
+        ManifoldOpType op,
+        Func<IBooleans, Result<IMesh>> fallback)
+    {
+        var result = ManifoldKernel.Batch(operands, op, BooleanOperands.DescribeBatch(operands, operation));
+        if (result.IsSuccess)
+        {
+            return Result.Success(Produced(result.Value));
+        }
+
+        if (_fallback is null || !ShouldFallBack(result.Error))
+        {
+            return Result.Failure<IMesh>(result.Error);
+        }
+
+        var fallen = fallback(_fallback);
+        return fallen.IsFailure ? fallen : Result.Success(FellBack(fallen.Value));
+    }
+
+    private static IMesh Produced(ManifoldOutcome outcome) =>
+        outcome.Mesh.WithMetadata(outcome.Mesh.Metadata.WithCreatedBy(
+            outcome.Provenance == ManifoldProvenance.NativeAfterMergingOperands ? NativeMergedProducer : NativeProducer));
+
+    private static IMesh FellBack(IMesh mesh) => mesh.WithMetadata(mesh.Metadata.WithCreatedBy(FallbackProducer));
+
     private delegate Result<ManifoldOutcome> NativeOperation(IMesh left, IMesh right, MeshMetadata metadata);
 
     private delegate Result<IMesh> FallbackOperation(IBooleans fallback, IMesh left, IMesh right);
@@ -59,12 +144,7 @@ internal sealed class ManifoldBooleanOperations(IBooleans? fallback = null) : IB
 
         if (result.IsSuccess)
         {
-            var producer = result.Value.Provenance == ManifoldProvenance.NativeAfterMergingOperands
-                ? NativeMergedProducer
-                : NativeProducer;
-
-            return Result.Success(result.Value.Mesh.WithMetadata(
-                result.Value.Mesh.Metadata.WithCreatedBy(producer)));
+            return Result.Success(Produced(result.Value));
         }
 
         if (_fallback is null || !ShouldFallBack(result.Error))
@@ -74,10 +154,7 @@ internal sealed class ManifoldBooleanOperations(IBooleans? fallback = null) : IB
 
         var fallen = fallback(_fallback, meshA, meshB);
 
-        return fallen.IsFailure
-            ? fallen
-            : Result.Success(fallen.Value.WithMetadata(
-                fallen.Value.Metadata.WithCreatedBy(FallbackProducer)));
+        return fallen.IsFailure ? fallen : Result.Success(FellBack(fallen.Value));
     }
 
     /// <summary>

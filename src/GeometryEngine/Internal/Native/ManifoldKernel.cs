@@ -45,6 +45,140 @@ internal static unsafe class ManifoldKernel
         RunOperation(left, right, metadata, ManifoldNative.manifold_intersection);
 
     /// <summary>
+    /// Combines every mesh in one native operation. For a subtraction the first mesh is the
+    /// subject and the rest are taken away from it.
+    /// </summary>
+    public static Result<ManifoldOutcome> Batch(IReadOnlyList<IMesh> meshes, ManifoldOpType op, MeshMetadata metadata) =>
+        Guarded(() =>
+        {
+            var operands = new List<IntPtr>(meshes.Count);
+            var merged = false;
+            var vector = IntPtr.Zero;
+            var result = IntPtr.Zero;
+            try
+            {
+                foreach (var input in meshes)
+                {
+                    var operand = ToManifold(input);
+                    if (operand.IsFailure)
+                    {
+                        return Result.Failure<ManifoldOutcome>(operand.Error);
+                    }
+
+                    operands.Add(operand.Value.Handle);
+                    merged |= operand.Value.Merged;
+                }
+
+                vector = ManifoldNative.manifold_alloc_manifold_vec();
+                ManifoldNative.manifold_manifold_empty_vec(vector);
+                foreach (var operand in operands)
+                {
+                    ManifoldNative.manifold_manifold_vec_push_back(vector, operand);
+                }
+
+                result = ManifoldNative.manifold_alloc_manifold();
+                ManifoldNative.manifold_batch_boolean(result, vector, op);
+
+                var status = ManifoldNative.manifold_status(result);
+                if (status != ManifoldError.NoError)
+                {
+                    return Result.Failure<ManifoldOutcome>(ManifoldErrors.OperationFailed(status));
+                }
+
+                var mesh = FromManifold(result, metadata);
+                return mesh.IsFailure
+                    ? Result.Failure<ManifoldOutcome>(mesh.Error)
+                    : Result.Success(new ManifoldOutcome(mesh.Value, Provenance(merged)));
+            }
+            finally
+            {
+                if (result != IntPtr.Zero)
+                {
+                    ManifoldNative.manifold_delete_manifold(result);
+                }
+
+                // The vector holds copies, so deleting it leaves the operands to be deleted too.
+                if (vector != IntPtr.Zero)
+                {
+                    ManifoldNative.manifold_delete_manifold_vec(vector);
+                }
+
+                foreach (var operand in operands)
+                {
+                    ManifoldNative.manifold_delete_manifold(operand);
+                }
+            }
+        });
+
+    /// <summary>
+    /// Cuts a mesh along a plane in one native pass, capping both cut faces. The first outcome is
+    /// the side the normal points to.
+    /// </summary>
+    public static Result<(ManifoldOutcome Front, ManifoldOutcome Back)> Split(
+        IMesh mesh, Plane plane, MeshMetadata frontMetadata, MeshMetadata backMetadata) =>
+        Guarded(() =>
+        {
+            if (mesh.IsEmpty)
+            {
+                return Result.Failure<(ManifoldOutcome, ManifoldOutcome)>(ManifoldErrors.EmptyOperand(mesh.Metadata.Name));
+            }
+
+            var operand = ToManifold(mesh);
+            if (operand.IsFailure)
+            {
+                return Result.Failure<(ManifoldOutcome, ManifoldOutcome)>(operand.Error);
+            }
+
+            var front = IntPtr.Zero;
+            var back = IntPtr.Zero;
+            try
+            {
+                front = ManifoldNative.manifold_alloc_manifold();
+                back = ManifoldNative.manifold_alloc_manifold();
+
+                var n = plane.Normal.Vector;
+                ManifoldNative.manifold_split_by_plane(front, back, operand.Value.Handle, n.X, n.Y, n.Z, plane.Offset);
+
+                foreach (var half in new[] { front, back })
+                {
+                    var status = ManifoldNative.manifold_status(half);
+                    if (status != ManifoldError.NoError)
+                    {
+                        return Result.Failure<(ManifoldOutcome, ManifoldOutcome)>(ManifoldErrors.OperationFailed(status));
+                    }
+                }
+
+                var frontMesh = FromManifold(front, frontMetadata);
+                if (frontMesh.IsFailure)
+                {
+                    return Result.Failure<(ManifoldOutcome, ManifoldOutcome)>(frontMesh.Error);
+                }
+
+                var backMesh = FromManifold(back, backMetadata);
+                if (backMesh.IsFailure)
+                {
+                    return Result.Failure<(ManifoldOutcome, ManifoldOutcome)>(backMesh.Error);
+                }
+
+                var provenance = Provenance(operand.Value.Merged);
+                return Result.Success((new ManifoldOutcome(frontMesh.Value, provenance), new ManifoldOutcome(backMesh.Value, provenance)));
+            }
+            finally
+            {
+                foreach (var handle in new[] { front, back, operand.Value.Handle })
+                {
+                    if (handle != IntPtr.Zero)
+                    {
+                        ManifoldNative.manifold_delete_manifold(handle);
+                    }
+                }
+            }
+        });
+
+    private static ManifoldProvenance Provenance(bool merged) =>
+        merged ? ManifoldProvenance.NativeAfterMergingOperands : ManifoldProvenance.Native;
+
+    /// <summary>
     /// Rounds creases while leaving flat surface where it is, by interpolating the surface through
     /// smooth tangents rather than by filtering vertices.
     /// </summary>

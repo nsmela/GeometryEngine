@@ -50,7 +50,34 @@ public interface IBooleans
 
     /// <summary>Everything inside both A and B.</summary>
     Result<IMesh> Intersect(IMesh meshA, IMesh meshB);
+
+    /// <summary>
+    /// Everything inside any of the meshes, in one operation. Cheaper than folding
+    /// <see cref="Union(IMesh, IMesh)"/> over them - each pairwise step re-reads the growing
+    /// result - and the meshes may overlap one another freely. One mesh comes back as it is.
+    /// </summary>
+    Result<IMesh> Union(ImmutableArray<IMesh> meshes);
+
+    /// <summary>
+    /// Everything inside <paramref name="mesh"/> and inside none of <paramref name="tools"/>, in
+    /// one operation rather than a subtraction per tool against an ever-changing result. With no
+    /// tools the mesh comes back as it is.
+    /// </summary>
+    Result<IMesh> Subtract(IMesh mesh, ImmutableArray<IMesh> tools);
+
+    /// <summary>
+    /// Cuts a closed mesh in two along a plane, capping both cut faces so each half is closed.
+    /// <see cref="MeshSplit.Front"/> is the side the plane's normal points to. A mesh lying
+    /// wholly on one side comes back whole on that side, with an empty mesh on the other.
+    /// </summary>
+    Result<MeshSplit> Split(IMesh mesh, Plane plane);
 }
+
+/// <summary>
+/// The two halves of a cut: <see cref="Front"/> on the side the plane's normal points to,
+/// <see cref="Back"/> on the other. Either may be empty.
+/// </summary>
+public sealed record MeshSplit(IMesh Front, IMesh Back);
 
 /// <summary>A tube swept along a polyline, with its own radius at every path point.</summary>
 public sealed record TubeSpec(ImmutableArray<Vec3> Path, ImmutableArray<double> Radii, int Segments = 16, bool Capped = true);
@@ -198,7 +225,17 @@ public sealed record TopologyValidation(
     public int UnreferencedVertexCount { get; init; }
 }
 
-/// <summary>Measurement and inspection of meshes.</summary>
+/// <summary>
+/// Measurement and inspection of meshes.
+///
+/// <see cref="GetStatistics"/>, <see cref="ValidateTopology"/> and
+/// <see cref="ComputeVertexNormals"/> remember their answer on the mesh, which cannot change, so
+/// only the first call for a given geometry walks it and every later one is a lookup. A copy made
+/// by <see cref="IMesh.WithMetadata"/> shares those answers, and a translation or rotation hands
+/// them on to the mesh it produces. So there is no need to keep these figures beside a mesh: ask
+/// again whenever they are needed - and, where the first measurement would land on a thread that
+/// must not stall, ask once ahead of time on one that can.
+/// </summary>
 public interface IGeometryEvaluators
 {
     Result<MeshStatistics> GetStatistics(IMesh mesh);
@@ -219,7 +256,40 @@ public interface IGeometryEvaluators
     /// touch - sharing an edge or a corner, or lying in one plane - are not counted.
     /// </summary>
     Result<int> CountSelfIntersections(IMesh mesh);
+
+    /// <summary>
+    /// How far each vertex of <paramref name="mesh"/> lies from the surface of
+    /// <paramref name="reference"/> - how far smoothing or decimation moved a surface, say, when
+    /// the reference is the mesh as it was before.
+    /// </summary>
+    Result<SurfaceDeviation> MeasureDeviation(IMesh mesh, IMesh reference);
+
+    /// <summary>
+    /// The local high points of a surface as seen along <paramref name="up"/>, with each one's
+    /// prominence. Corners shared by several triangles are joined by position, so a mesh that
+    /// repeats them per triangle reads as one surface rather than a heap of separate facets.
+    /// </summary>
+    Result<ISurfacePeaks> FindPeaks(IMesh mesh, Direction up);
 }
+
+/// <summary>
+/// The signed distance of every vertex of a mesh from a reference surface, in the mesh's vertex
+/// order: positive outside the reference, negative inside it.
+///
+/// It is one-sided and measured at vertices, so it is a floor on how far the two surfaces
+/// differ rather than the whole of it: a bump on the reference that the mesh passes over without
+/// a vertex near it goes unseen. Measure the other way round as well where that matters.
+/// </summary>
+/// <param name="MaxOutside">The furthest any vertex lies outside the reference; zero if none does.</param>
+/// <param name="MaxInside">The furthest any vertex lies inside it, as a distance; zero if none does.</param>
+/// <param name="MeanAbsolute">The average distance, whichever side.</param>
+/// <param name="RootMeanSquare">The root mean square distance, which weighs the larger departures more.</param>
+public sealed record SurfaceDeviation(
+    ImmutableArray<double> Distances,
+    double MaxOutside,
+    double MaxInside,
+    double MeanAbsolute,
+    double RootMeanSquare);
 
 /// <summary>Transformations. Every method returns a new mesh.</summary>
 public interface IGeometryTransforms
@@ -229,6 +299,9 @@ public interface IGeometryTransforms
     Result<IMesh> Scale(IMesh mesh, Vec3 factors);
 
     Result<IMesh> Rotate(IMesh mesh, Direction axis, double radians);
+
+    /// <summary>Turns a mesh about the origin. For a rotation already held as a quaternion, or composed from several.</summary>
+    Result<IMesh> Rotate(IMesh mesh, Rotation rotation);
 }
 
 /// <summary>The mesh file formats the IO slices read and write.</summary>
@@ -460,10 +533,11 @@ public readonly record struct RayHit(Vec3 Point, Vec3 Normal, double Distance, i
 public readonly record struct SurfacePoint(Vec3 Point, Vec3 Normal, double Distance, int Triangle);
 
 /// <summary>
-/// A mesh prepared for repeated spatial queries. Build one with
-/// <see cref="ISpatialQueries.BuildIndex"/> and reuse it: building costs far more than a query.
-/// Safe to query from several threads. Disposing releases any native acceleration structure
-/// early; an index that is never disposed releases it when collected.
+/// A mesh prepared for repeated spatial queries: building one costs far more than a query.
+/// Usually the one to use is the mesh's own, from <see cref="ISpatialQueries.IndexFor"/>, which
+/// is shared and cannot be disposed. One from <see cref="ISpatialQueries.BuildIndex"/> belongs
+/// to the caller, and disposing it releases any native acceleration structure early; an index
+/// that is never disposed releases it when collected. Safe to query from several threads.
 /// </summary>
 public interface ISpatialIndex : IDisposable
 {
@@ -487,7 +561,20 @@ public interface ISpatialIndex : IDisposable
 /// <summary>Spatial queries against meshes.</summary>
 public interface ISpatialQueries
 {
+    /// <summary>A new index over the mesh, owned by the caller, to dispose when done with it.</summary>
     Result<ISpatialIndex> BuildIndex(IMesh mesh);
+
+    /// <summary>
+    /// The index kept with the mesh: built the first time anything asks for it - this call, or
+    /// an engine operation querying the mesh as a surface - and shared from then on, including
+    /// with copies made by <see cref="IMesh.WithMetadata"/>. Prefer this for any mesh queried more
+    /// than once; the engine's own operations already use it, so a decal laid onto a mesh and a
+    /// deviation measured against it share one index rather than building two.
+    ///
+    /// It lives as long as the mesh does, and disposing it does nothing, so there is no owner to
+    /// keep track of. A moved mesh is a new mesh, with an index of its own.
+    /// </summary>
+    Result<ISpatialIndex> IndexFor(IMesh mesh);
 }
 
 /// <summary>
@@ -499,7 +586,8 @@ public sealed record PlanarTriangulation(ImmutableArray<Vec2> Points, ImmutableA
 /// <summary>
 /// Planar polygon operations. Offsets, buffers and unions answer with a single outline: where
 /// the operation splits a region into islands the largest is kept, since every consumer of
-/// these wants one footprint.
+/// these wants one footprint. <see cref="Intersect"/> and <see cref="Subtract"/> are set
+/// operations rather than footprint builders, and return every region.
 /// </summary>
 public interface IPolygonOperations
 {
@@ -508,6 +596,40 @@ public interface IPolygonOperations
 
     /// <summary>The smoothed convex hull of a mesh's shadow on the XY plane.</summary>
     Result<PlanarPolygon> ProjectConvexHull(IMesh mesh);
+
+    /// <summary>
+    /// The exact convex hull of a set of points, counter-clockwise. Points spanning no area -
+    /// fewer than three, or all in a line - have no hull and are refused; to give them one,
+    /// <see cref="BufferPath"/> them instead, which turns a point into a disc and a line into a
+    /// stadium.
+    /// </summary>
+    Result<PlanarPolygon> ConvexHull(ImmutableArray<Vec2> points);
+
+    /// <summary>
+    /// The regions inside both polygons, holes respected on the way in and out. Empty when they
+    /// do not overlap - a valid answer, not an error.
+    /// </summary>
+    Result<ImmutableArray<PlanarPolygon>> Intersect(PlanarPolygon a, PlanarPolygon b);
+
+    /// <summary>The regions inside <paramref name="a"/> and outside <paramref name="b"/>, holes respected. Empty when b covers a.</summary>
+    Result<ImmutableArray<PlanarPolygon>> Subtract(PlanarPolygon a, PlanarPolygon b);
+
+    /// <summary>
+    /// Groups closed loops - a glyph's contours, say - into polygons, telling outlines from holes
+    /// by containment: a loop inside an odd number of others is a hole of the loop directly
+    /// around it, and an island inside a hole is a polygon of its own. Order and winding are
+    /// ignored on the way in. Loops with fewer than three distinct points, or no area, are dropped.
+    /// </summary>
+    ImmutableArray<PlanarPolygon> FromLoops(ImmutableArray<ImmutableArray<Vec2>> loops);
+
+    /// <summary>
+    /// The cross-section where the horizontal plane at <paramref name="height"/> cuts a mesh, in
+    /// XY: every closed loop of the cut, grouped into outlines and holes as <see cref="FromLoops"/>
+    /// groups them. A hollow solid gives an outline with its cavity as a hole; a plane that misses
+    /// the mesh gives nothing. Only closed loops are returned, so an open surface's cut is dropped
+    /// where it runs off the edge.
+    /// </summary>
+    Result<ImmutableArray<PlanarPolygon>> Slice(IMesh mesh, double height);
 
     /// <summary>Grows the outer boundary by <paramref name="distance"/>, or insets it when negative, with rounded corners.</summary>
     Result<PlanarPolygon> Offset(PlanarPolygon polygon, double distance);

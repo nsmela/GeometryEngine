@@ -34,11 +34,15 @@ public interface IMesh
 /// The only implementation of <see cref="IMesh"/> in the library. It cannot be
 /// constructed in an invalid state: <see cref="Create"/> rejects ragged index
 /// arrays, out-of-range indices and non-finite coordinates.
+///
+/// Because it cannot change, it also remembers what the engine has measured of it - statistics,
+/// the topology audit, vertex normals - so asking twice costs one measurement. A caller wanting
+/// those figures asks the engine each time it needs them rather than keeping its own copy.
 /// </summary>
 public sealed class ImmutableMesh : IMesh
 {
     public static readonly ImmutableMesh Empty =
-        new(ImmutableArray<Vec3>.Empty, ImmutableArray<int>.Empty, MeshMetadata.Named("empty"));
+        new(ImmutableArray<Vec3>.Empty, ImmutableArray<int>.Empty, MeshMetadata.Named("empty"), new MeshMeasurements());
 
     public ImmutableArray<Vec3> Vertices { get; }
     public ImmutableArray<int> Triangles { get; }
@@ -48,11 +52,15 @@ public sealed class ImmutableMesh : IMesh
     public int TriangleCount => Triangles.Length / 3;
     public bool IsEmpty => Triangles.IsEmpty;
 
-    private ImmutableMesh(ImmutableArray<Vec3> vertices, ImmutableArray<int> triangles, MeshMetadata metadata)
+    /// <summary>What the engine has measured of this geometry so far.</summary>
+    internal MeshMeasurements Measurements { get; }
+
+    private ImmutableMesh(ImmutableArray<Vec3> vertices, ImmutableArray<int> triangles, MeshMetadata metadata, MeshMeasurements measurements)
     {
         Vertices = vertices;
         Triangles = triangles;
         Metadata = metadata;
+        Measurements = measurements;
     }
 
     public static Result<IMesh> Create(
@@ -83,13 +91,14 @@ public sealed class ImmutableMesh : IMesh
             }
         }
 
-        return Result.Success<IMesh>(new ImmutableMesh(vertices, triangles, metadata));
+        return Result.Success<IMesh>(new ImmutableMesh(vertices, triangles, metadata, new MeshMeasurements()));
     }
 
+    /// <summary>Returns a mesh with the same geometry and different metadata. What has been measured of the geometry is shared.</summary>
     public IMesh WithMetadata(MeshMetadata metadata)
     {
         ArgumentNullException.ThrowIfNull(metadata);
-        return new ImmutableMesh(Vertices, Triangles, metadata);
+        return new ImmutableMesh(Vertices, Triangles, metadata, Measurements);
     }
 
     public (Vec3 A, Vec3 B, Vec3 C) TriangleAt(int triangleIndex)

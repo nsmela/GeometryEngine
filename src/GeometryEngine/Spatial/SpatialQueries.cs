@@ -234,10 +234,66 @@ internal sealed class SpatialIndex : ISpatialIndex
     }
 }
 
+/// <summary>
+/// The index kept with a mesh, as handed out to anyone who asks for it. Every query passes
+/// straight through; disposing it does nothing, because one holder disposing an index every other
+/// holder is still using would be a fault waiting for the order of two calls to change. The
+/// index's native memory is released when the mesh, and so the index, is collected.
+/// </summary>
+internal sealed class SharedSpatialIndex(SpatialIndex inner) : ISpatialIndex
+{
+    public SpatialIndex Inner { get; } = inner;
+
+    public IMesh Mesh => Inner.Mesh;
+
+    public Maybe<RayHit> Raycast(Vec3 origin, Direction direction) => Inner.Raycast(origin, direction);
+
+    public Maybe<SurfacePoint> ClosestPoint(Vec3 point) => Inner.ClosestPoint(point);
+
+    public double SignedDistance(Vec3 point) => Inner.SignedDistance(point);
+
+    public ImmutableArray<double> SignedDistances(ImmutableArray<Vec3> points) => Inner.SignedDistances(points);
+
+    public void Dispose()
+    {
+    }
+}
+
+/// <summary>Reaching the index kept with a mesh, for the slices that query a surface they were handed.</summary>
+internal static class SharedIndexes
+{
+    /// <summary>
+    /// The index kept with <paramref name="mesh"/>, built now if nothing has asked for it yet. A
+    /// mesh that is not an <see cref="ImmutableMesh"/> has nowhere to keep one, and gets a fresh
+    /// index each time.
+    /// </summary>
+    public static SharedSpatialIndex For(IMesh mesh) =>
+        mesh is ImmutableMesh immutable
+            ? (SharedSpatialIndex)immutable.Measurements.Index(() => new SharedSpatialIndex(new SpatialIndex(mesh)))
+            : new SharedSpatialIndex(new SpatialIndex(mesh));
+
+    /// <summary>The engine's own index behind one a caller supplied, whichever way they came by it.</summary>
+    public static SpatialIndex? Unwrap(ISpatialIndex index) => index switch
+    {
+        SpatialIndex own => own,
+        SharedSpatialIndex shared => shared.Inner,
+        _ => null,
+    };
+}
+
 /// <summary>The <see cref="ISpatialQueries"/> facade.</summary>
 internal sealed class SpatialQueries : ISpatialQueries
 {
     private readonly BuildIndexHandler _build = new();
 
     public Result<ISpatialIndex> BuildIndex(IMesh mesh) => _build.Handle(new BuildIndexRequest(mesh));
+
+    public Result<ISpatialIndex> IndexFor(IMesh mesh)
+    {
+        ArgumentNullException.ThrowIfNull(mesh);
+
+        return mesh.IsEmpty
+            ? MeshErrors.EmptyOperand
+            : Result.Success<ISpatialIndex>(SharedIndexes.For(mesh));
+    }
 }

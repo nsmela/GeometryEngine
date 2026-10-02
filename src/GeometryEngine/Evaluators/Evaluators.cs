@@ -401,7 +401,53 @@ internal sealed class SelfIntersectionsHandler
     }
 }
 
-/// <summary>The <see cref="IGeometryEvaluators"/> facade over the evaluator slices.</summary>
+/// <summary>Ask how far one mesh's vertices lie from another's surface.</summary>
+public sealed record DeviationRequest(IMesh Mesh, IMesh Reference);
+
+/// <summary>
+/// One batch of signed-distance queries against the reference, answered natively and in
+/// parallel where the native field is present. The reference's own index is used, so comparing
+/// mesh after mesh against one reference - a heatmap redrawn as smoothing is tuned - builds it,
+/// and its native field, once.
+/// </summary>
+internal sealed class DeviationHandler
+{
+    public Result<SurfaceDeviation> Handle(DeviationRequest request)
+    {
+        ArgumentNullException.ThrowIfNull(request.Mesh);
+        ArgumentNullException.ThrowIfNull(request.Reference);
+
+        if (request.Mesh.IsEmpty || request.Reference.IsEmpty)
+        {
+            return MeshErrors.EmptyOperand;
+        }
+
+        var distances = Spatial.SharedIndexes.For(request.Reference).SignedDistances(request.Mesh.Vertices);
+
+        double outside = 0, inside = 0, absolute = 0, squares = 0;
+        foreach (var distance in distances)
+        {
+            outside = Math.Max(outside, distance);
+            inside = Math.Max(inside, -distance);
+            absolute += Math.Abs(distance);
+            squares += distance * distance;
+        }
+
+        return new SurfaceDeviation(
+            distances,
+            outside,
+            inside,
+            absolute / distances.Length,
+            Math.Sqrt(squares / distances.Length));
+    }
+}
+
+/// <summary>
+/// The <see cref="IGeometryEvaluators"/> facade over the evaluator slices. Statistics, topology
+/// and normals are read from the mesh's measurement cache when it has them and written to it when
+/// it does not, so the handlers stay pure measurements and the caching lives in one place.
+/// Failures are not cached: the inputs that fail are empty meshes, which are cheap to refuse again.
+/// </summary>
 internal sealed class GeometryEvaluators(Tolerance tolerance) : IGeometryEvaluators
 {
     private readonly StatisticsHandler _statistics = new();
@@ -409,14 +455,87 @@ internal sealed class GeometryEvaluators(Tolerance tolerance) : IGeometryEvaluat
     private readonly ComponentsHandler _components = new();
     private readonly VertexNormalsHandler _normals = new();
     private readonly SelfIntersectionsHandler _selfIntersections = new();
+    private readonly DeviationHandler _deviation = new();
+    private readonly PeaksHandler _peaks = new();
 
-    public Result<MeshStatistics> GetStatistics(IMesh mesh) => _statistics.Handle(new StatisticsRequest(mesh));
+    public Result<ISurfacePeaks> FindPeaks(IMesh mesh, Direction up)
+    {
+        ArgumentNullException.ThrowIfNull(mesh);
 
-    public Result<TopologyValidation> ValidateTopology(IMesh mesh) => _topology.Handle(new TopologyRequest(mesh));
+        if (mesh.IsEmpty)
+        {
+            return MeshErrors.EmptyOperand;
+        }
+
+        // Through this facade rather than the handler, so a mesh whose normals were already
+        // measured - one about to be drawn, say - does not have them computed twice.
+        var normals = ComputeVertexNormals(mesh);
+        return normals.IsFailure
+            ? Result.Failure<ISurfacePeaks>(normals.Error)
+            : _peaks.Handle(new PeaksRequest(mesh, up, normals.Value));
+    }
+
+    public Result<SurfaceDeviation> MeasureDeviation(IMesh mesh, IMesh reference) =>
+        _deviation.Handle(new DeviationRequest(mesh, reference));
+
+    public Result<MeshStatistics> GetStatistics(IMesh mesh)
+    {
+        ArgumentNullException.ThrowIfNull(mesh);
+
+        var cache = (mesh as ImmutableMesh)?.Measurements;
+        if (cache?.Statistics is { } known)
+        {
+            return known;
+        }
+
+        var measured = _statistics.Handle(new StatisticsRequest(mesh));
+        if (measured.IsSuccess && cache is not null)
+        {
+            cache.Statistics = measured.Value;
+        }
+
+        return measured;
+    }
+
+    public Result<TopologyValidation> ValidateTopology(IMesh mesh)
+    {
+        ArgumentNullException.ThrowIfNull(mesh);
+
+        var cache = (mesh as ImmutableMesh)?.Measurements;
+        if (cache?.TopologyAt(tolerance.Value) is { } known)
+        {
+            return known;
+        }
+
+        var measured = _topology.Handle(new TopologyRequest(mesh));
+        if (measured.IsSuccess && cache is not null)
+        {
+            cache.SetTopology(tolerance.Value, measured.Value);
+        }
+
+        return measured;
+    }
 
     public Result<ImmutableArray<IMesh>> SeparateComponents(IMesh mesh) => _components.Handle(new ComponentsRequest(mesh));
 
-    public Result<ImmutableArray<Vec3>> ComputeVertexNormals(IMesh mesh) => _normals.Handle(new VertexNormalsRequest(mesh));
+    public Result<ImmutableArray<Vec3>> ComputeVertexNormals(IMesh mesh)
+    {
+        ArgumentNullException.ThrowIfNull(mesh);
+
+        var cache = (mesh as ImmutableMesh)?.Measurements;
+        if (cache?.VertexNormals is { } known)
+        {
+            return known;
+        }
+
+        var measured = _normals.Handle(new VertexNormalsRequest(mesh));
+        if (measured.IsSuccess && cache is not null)
+        {
+            cache.VertexNormals = measured.Value;
+        }
+
+        return measured;
+    }
 
     public Result<int> CountSelfIntersections(IMesh mesh) => _selfIntersections.Handle(new SelfIntersectionsRequest(mesh));
 }

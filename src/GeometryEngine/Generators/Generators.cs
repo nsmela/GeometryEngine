@@ -68,17 +68,29 @@ internal sealed class BoxHandler
             return GeneratorErrors.DegenerateBox;
         }
 
-        var (min, max) = (request.Min, request.Max);
+        return InFrame(
+            Vec3.Zero, Vec3.UnitX, Vec3.UnitY, Vec3.UnitZ, request.Min, request.Max,
+            new MeshMetadata("box", "GeometryEngine.Generators"));
+    }
+
+    /// <summary>
+    /// A box laid in a frame: corner (x, y, z) sits at origin + x·<paramref name="u"/> +
+    /// y·<paramref name="v"/> + z·<paramref name="n"/>, for each coordinate spanning
+    /// <paramref name="min"/> to <paramref name="max"/>. The frame must be orthonormal and
+    /// right-handed (u × v = n) - that is what keeps the faces wound outwards.
+    /// </summary>
+    internal static Result<IMesh> InFrame(Vec3 origin, Vec3 u, Vec3 v, Vec3 n, Vec3 min, Vec3 max, MeshMetadata metadata)
+    {
         var builder = new MeshBuilder();
 
         // Corners are numbered so that bit 0 is X, bit 1 is Y and bit 2 is Z.
         var corners = new int[8];
         for (var i = 0; i < 8; i++)
         {
-            corners[i] = builder.AddVertex(new Vec3(
-                (i & 1) == 0 ? min.X : max.X,
-                (i & 2) == 0 ? min.Y : max.Y,
-                (i & 4) == 0 ? min.Z : max.Z));
+            corners[i] = builder.AddVertex(origin
+                + (u * ((i & 1) == 0 ? min.X : max.X))
+                + (v * ((i & 2) == 0 ? min.Y : max.Y))
+                + (n * ((i & 4) == 0 ? min.Z : max.Z)));
         }
 
         builder.AddQuad(corners[0], corners[4], corners[6], corners[2]); // -X
@@ -88,7 +100,7 @@ internal sealed class BoxHandler
         builder.AddQuad(corners[0], corners[2], corners[3], corners[1]); // -Z
         builder.AddQuad(corners[4], corners[5], corners[7], corners[6]); // +Z
 
-        return builder.ToMesh(new MeshMetadata("box", "GeometryEngine.Generators"));
+        return builder.ToMesh(metadata);
     }
 }
 
