@@ -113,12 +113,20 @@ internal static class PolygonTriangulator
         List<Vec2> points,
         List<(int, int, int)> triangles)
     {
+        // The ring is kept as ids into one list of distinct points. Bridging a hole visits the
+        // bridge's two ends twice, and both visits must stay the same point: as two points, every
+        // edge meeting a bridge end has differently numbered copies on its two sides, and the
+        // prism builder takes each such edge for an outline and stands a wall on it - inside the
+        // letter, from its edge to the counter.
+        var distinct = new List<Vec2>(outer);
+
         // Orient once so the ear test only ever has to consider one winding.
-        var ring = new List<Vec2>(outer);
-        if (SignedArea(ring) < 0)
+        if (SignedArea(distinct) < 0)
         {
-            ring.Reverse();
+            distinct.Reverse();
         }
+
+        var ring = Enumerable.Range(0, distinct.Count).ToList();
 
         foreach (var hole in holes.OrderByDescending(h => h.Max(p => p.X)))
         {
@@ -128,18 +136,46 @@ internal static class PolygonTriangulator
                 oriented.Reverse(); // Holes wind against the outer ring.
             }
 
-            ring = BridgeHole(ring, oriented);
+            var holeIds = Enumerable.Range(distinct.Count, oriented.Count).ToList();
+            distinct.AddRange(oriented);
+            ring = BridgeHole(ring, holeIds, distinct);
         }
 
-        var baseIndex = points.Count;
-        points.AddRange(ring);
+        var positions = ring.Select(id => distinct[id]).ToList();
+        var clipped = new List<(int A, int B, int C)>();
+        foreach (var (a, b, c) in EarClip(positions))
+        {
+            var (ia, ib, ic) = (ring[a], ring[b], ring[c]);
 
-        var clipped = EarClip(ring);
-        DelaunayFlip(ring, clipped);
+            // Two corners on the same bridge end make a triangle with no area.
+            if (ia != ib && ib != ic && ic != ia)
+            {
+                clipped.Add((ia, ib, ic));
+            }
+        }
+
+        DelaunayFlip(distinct, clipped);
+
+        // Only points a triangle uses: a hole that could not be bridged contributes none.
+        var used = new int[distinct.Count];
+        Array.Fill(used, -1);
+        foreach (var (a, b, c) in clipped)
+        {
+            used[a] = used[b] = used[c] = 0;
+        }
+
+        for (var id = 0; id < distinct.Count; id++)
+        {
+            if (used[id] == 0)
+            {
+                used[id] = points.Count;
+                points.Add(distinct[id]);
+            }
+        }
 
         foreach (var (a, b, c) in clipped)
         {
-            triangles.Add((baseIndex + a, baseIndex + b, baseIndex + c));
+            triangles.Add((used[a], used[b], used[c]));
         }
     }
 
@@ -268,27 +304,35 @@ internal static class PolygonTriangulator
     /// Cuts a hole into its containing ring along a mutually visible pair of vertices, turning the
     /// two loops into one. The doubled-back bridge edge is what makes the result ear-clippable.
     /// </summary>
-    private static List<Vec2> BridgeHole(List<Vec2> outer, List<Vec2> hole)
+    /// <remarks>
+    /// Both rings, and the result, are ids into <paramref name="points"/>. This is Eberly's
+    /// construction, and both of its checks matter. The edge the ray meets first has an end in
+    /// view of the hole only when no reflex corner of the ring stands in between. And once one
+    /// hole is bridged, the vertex it was bridged to is visited twice: the second hole has to be
+    /// joined at the visit facing it, or the ring crosses itself and the clipped triangles
+    /// overlap - two counters bridged to the same corner of a B did exactly that.
+    /// </remarks>
+    private static List<int> BridgeHole(List<int> outer, List<int> hole, List<Vec2> points)
     {
         // Start from the hole's rightmost vertex: a ray cast right from it leaves the hole
         // immediately, so the first outer edge it meets genuinely lies between the two rings.
         var holeIndex = 0;
         for (var i = 1; i < hole.Count; i++)
         {
-            if (hole[i].X > hole[holeIndex].X)
+            if (points[hole[i]].X > points[hole[holeIndex]].X)
             {
                 holeIndex = i;
             }
         }
 
-        var start = hole[holeIndex];
-        var bridgeIndex = -1;
-        var bestDistance = double.MaxValue;
+        var start = points[hole[holeIndex]];
+        var edge = -1;
+        var hitX = double.MaxValue;
 
         for (var i = 0; i < outer.Count; i++)
         {
-            var a = outer[i];
-            var b = outer[(i + 1) % outer.Count];
+            var a = points[outer[i]];
+            var b = points[outer[(i + 1) % outer.Count]];
 
             if ((a.Y > start.Y) == (b.Y > start.Y))
             {
@@ -297,26 +341,75 @@ internal static class PolygonTriangulator
 
             var t = (start.Y - a.Y) / (b.Y - a.Y);
             var x = a.X + (t * (b.X - a.X));
-            if (x <= start.X)
+            if (x > start.X && x < hitX)
             {
-                continue;
-            }
-
-            if (x - start.X < bestDistance)
-            {
-                bestDistance = x - start.X;
-                bridgeIndex = a.X > b.X ? i : (i + 1) % outer.Count;
+                hitX = x;
+                edge = i;
             }
         }
 
-        if (bridgeIndex < 0)
+        if (edge < 0)
         {
             // Nothing visible: the hole is not actually inside. Leave the ring untouched rather
             // than stitch in a bridge that would cross it.
             return outer;
         }
 
-        var merged = new List<Vec2>(outer.Count + hole.Count + 2);
+        var hit = new Vec2(hitX, start.Y);
+        var first = outer[edge];
+        var second = outer[(edge + 1) % outer.Count];
+        var target = points[first].X > points[second].X ? first : second;
+
+        // Unless the ray landed on the vertex itself, a reflex corner inside the triangle between
+        // the hole, the hit and that vertex hides it. The one nearest the ray's direction is in view.
+        if (points[target] != hit)
+        {
+            var candidate = points[target];
+            var bestAngle = double.MaxValue;
+            var bestDistance = double.MaxValue;
+
+            for (var i = 0; i < outer.Count; i++)
+            {
+                var point = points[outer[i]];
+                if (point == candidate)
+                {
+                    continue;
+                }
+
+                var previous = points[outer[(i - 1 + outer.Count) % outer.Count]];
+                var next = points[outer[(i + 1) % outer.Count]];
+                if (Cross(previous, point, next) >= 0 || !InTriangle(point, start, hit, candidate))
+                {
+                    continue;
+                }
+
+                var angle = Math.Abs(Math.Atan2(point.Y - start.Y, point.X - start.X));
+                var distance = (point - start).LengthSquared;
+                if (angle < bestAngle || (angle == bestAngle && distance < bestDistance))
+                {
+                    bestAngle = angle;
+                    bestDistance = distance;
+                    target = outer[i];
+                }
+            }
+        }
+
+        var bridgeIndex = -1;
+        for (var i = 0; i < outer.Count && bridgeIndex < 0; i++)
+        {
+            if (outer[i] == target &&
+                InWedge(points[outer[(i - 1 + outer.Count) % outer.Count]], points[target], points[outer[(i + 1) % outer.Count]], start))
+            {
+                bridgeIndex = i;
+            }
+        }
+
+        if (bridgeIndex < 0)
+        {
+            bridgeIndex = outer.IndexOf(target);
+        }
+
+        var merged = new List<int>(outer.Count + hole.Count + 2);
         for (var i = 0; i <= bridgeIndex; i++)
         {
             merged.Add(outer[i]);
@@ -511,6 +604,35 @@ internal static class PolygonTriangulator
         const double minimumSine = 1e-7;
         var lengths = Math.Sqrt((b - a).LengthSquared * (c - b).LengthSquared);
         return Cross(a, b, c) > minimumSine * lengths;
+    }
+
+    /// <summary>Whether <paramref name="p"/> is inside or on a triangle of either winding.</summary>
+    private static bool InTriangle(Vec2 p, Vec2 a, Vec2 b, Vec2 c)
+    {
+        var ab = Cross(a, b, p);
+        var bc = Cross(b, c, p);
+        var ca = Cross(c, a, p);
+        return (ab >= 0 && bc >= 0 && ca >= 0) || (ab <= 0 && bc <= 0 && ca <= 0);
+    }
+
+    /// <summary>
+    /// Whether <paramref name="target"/> lies inside the corner a counter-clockwise ring makes at
+    /// <paramref name="corner"/>, which sweeps counter-clockwise from the way to
+    /// <paramref name="next"/> round to the way to <paramref name="previous"/>.
+    /// </summary>
+    private static bool InWedge(Vec2 previous, Vec2 corner, Vec2 next, Vec2 target)
+    {
+        var toNext = next - corner;
+        var toPrevious = previous - corner;
+        var toTarget = target - corner;
+
+        if (Cross(previous, corner, next) >= 0)
+        {
+            return toNext.Cross(toTarget) > 0 && toTarget.Cross(toPrevious) > 0;
+        }
+
+        // A reflex corner: inside unless the target is in the narrow outside wedge.
+        return !(toPrevious.Cross(toTarget) > 0 && toTarget.Cross(toNext) > 0);
     }
 
     private static bool PointInTriangle(Vec2 p, Vec2 a, Vec2 b, Vec2 c) =>
