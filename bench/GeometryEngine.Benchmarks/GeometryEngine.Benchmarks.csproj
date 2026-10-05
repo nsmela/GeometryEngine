@@ -10,6 +10,6 @@
     <ProjectReference Include="../../src/GeometryEngine/GeometryEngine.csproj" />
   </ItemGroup>
   <ItemGroup>
-    <PackageReference Include="BenchmarkDotNet" Version="0.14.0" />
+    <PackageReference Include="BenchmarkDotNet" Version="0.15.8" />
   </ItemGroup>
 </Project>
