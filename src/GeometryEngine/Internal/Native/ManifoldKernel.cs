@@ -270,6 +270,11 @@ internal static unsafe class ManifoldKernel
                         continue;
                     }
 
+                    if (node is Solid.Transformed)
+                    {
+                        return Result.Failure<ManifoldEvaluation>(new Error("Booleans.NotYet", "A moved part cannot be evaluated yet."));
+                    }
+
                     var step = (Solid.Combined)node;
                     var (left, right) = (built[step.Left], built[step.Right]);
                     var combined = Combine(step.Op, left, right);

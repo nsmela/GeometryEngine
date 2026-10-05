@@ -45,6 +45,11 @@ internal sealed class EvaluateHandler(IBooleans pairwise)
                 continue;
             }
 
+            if (node is Solid.Transformed)
+            {
+                return Result.Failure<IMesh>(new Error("Booleans.NotYet", "A moved part cannot be evaluated yet."));
+            }
+
             var step = (Solid.Combined)node;
             var combined = Combine(step.Op, built[step.Left], built[step.Right]);
             if (combined.IsFailure)

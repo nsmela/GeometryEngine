@@ -14,7 +14,30 @@ public enum BooleanOp
 }
 
 /// <summary>
-/// A description of a solid as booleans over meshes: a mesh, or two descriptions combined. It is
+/// How a part of a description is moved, turned or resized. A value like the description it
+/// belongs to: making one moves nothing, and whether it can be applied at all - a scale that
+/// would turn the solid inside out cannot - is answered when the description is evaluated.
+/// </summary>
+public abstract record SolidTransform
+{
+    // Closed, like Solid: these three and no others.
+    private SolidTransform()
+    {
+    }
+
+    /// <summary>Shifted by an offset.</summary>
+    public sealed record Translation(Vec3 Offset) : SolidTransform;
+
+    /// <summary>Turned about the origin.</summary>
+    public sealed record Turn(Rotation Rotation) : SolidTransform;
+
+    /// <summary>Scaled about the origin, by a factor along each axis.</summary>
+    public sealed record Scaling(Vec3 Factors) : SolidTransform;
+}
+
+/// <summary>
+/// A description of a solid as booleans over meshes: a mesh, or two descriptions combined, or
+/// one moved. It is
 /// a value, not an operation - building one does no geometry and cannot fail, and only
 /// <see cref="IBooleans.Evaluate"/> turns it into a mesh.
 ///
@@ -33,7 +56,8 @@ public enum BooleanOp
 /// </remarks>
 public abstract record Solid
 {
-    // Closed: a description is a Leaf or a Combined, and nothing outside this file can add a third.
+    // Closed: a description is a Leaf, a Combined or a Transformed, and nothing outside this file
+    // can add a fourth.
     private Solid()
     {
     }
@@ -59,6 +83,33 @@ public abstract record Solid
     /// <inheritdoc cref="Intersect(Solid)"/>
     public Solid Intersect(IMesh other) => Intersect(Of(other));
 
+    /// <summary>
+    /// This solid shifted by <paramref name="offset"/>. Moving a part inside a description, where
+    /// moving the mesh beforehand would do, spares the kernel reading the moved mesh in: it moves
+    /// the solid it already has.
+    /// </summary>
+    public Solid Translate(Vec3 offset) => new Transformed(this, new SolidTransform.Translation(offset));
+
+    /// <summary>This solid turned about an axis through the origin.</summary>
+    public Solid Rotate(Direction axis, double radians)
+    {
+        ArgumentNullException.ThrowIfNull(axis);
+        return Rotate(Rotation.FromAxisAngle(axis, radians));
+    }
+
+    /// <summary>This solid turned about the origin.</summary>
+    public Solid Rotate(Rotation rotation)
+    {
+        ArgumentNullException.ThrowIfNull(rotation);
+        return new Transformed(this, new SolidTransform.Turn(rotation));
+    }
+
+    /// <summary>
+    /// This solid scaled about the origin. Every factor must be positive: a description holding
+    /// one that is not is refused when it is evaluated.
+    /// </summary>
+    public Solid Scale(Vec3 factors) => new Transformed(this, new SolidTransform.Scaling(factors));
+
     /// <summary>A mesh, taken as the solid it encloses.</summary>
     public sealed record Leaf : Solid
     {
@@ -69,6 +120,22 @@ public abstract record Solid
         }
 
         public IMesh Mesh { get; }
+    }
+
+    /// <summary>A description, moved, turned or resized as a whole.</summary>
+    public sealed record Transformed : Solid
+    {
+        public Transformed(Solid source, SolidTransform transform)
+        {
+            ArgumentNullException.ThrowIfNull(source);
+            ArgumentNullException.ThrowIfNull(transform);
+            Source = source;
+            Transform = transform;
+        }
+
+        public Solid Source { get; }
+
+        public SolidTransform Transform { get; }
     }
 
     /// <summary>Two descriptions and the operation between them, read left to right.</summary>
