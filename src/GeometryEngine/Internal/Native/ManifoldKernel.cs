@@ -50,14 +50,9 @@ internal readonly record struct ManifoldEvaluation(ManifoldOutcome Outcome, int 
 /// </summary>
 internal static unsafe class ManifoldKernel
 {
+    /// <summary>The union of two meshes: a description one step long.</summary>
     public static Result<ManifoldOutcome> Union(IMesh left, IMesh right, MeshMetadata metadata) =>
-        RunOperation(left, right, metadata, ManifoldNative.manifold_union);
-
-    public static Result<ManifoldOutcome> Subtract(IMesh left, IMesh right, MeshMetadata metadata) =>
-        RunOperation(left, right, metadata, ManifoldNative.manifold_difference);
-
-    public static Result<ManifoldOutcome> Intersect(IMesh left, IMesh right, MeshMetadata metadata) =>
-        RunOperation(left, right, metadata, ManifoldNative.manifold_intersection);
+        Evaluate(Solid.Of(left).Union(right), metadata).Map(evaluation => evaluation.Outcome);
 
     /// <summary>
     /// Combines every mesh in one native operation. For a subtraction the first mesh is the
@@ -589,36 +584,9 @@ internal static unsafe class ManifoldKernel
         }
         catch (Exception exception) when (exception is DllNotFoundException or BadImageFormatException)
         {
-            return Result.Failure<T>(ManifoldErrors.Unusable(exception));
-        }
-        catch (Exception exception) when (exception is EntryPointNotFoundException or MarshalDirectiveException)
-        {
-            return Result.Failure<T>(ManifoldErrors.BindingMismatch(exception));
-        }
-    }
-
-    private delegate IntPtr NativeBooleanOp(IntPtr mem, IntPtr a, IntPtr b);
-
-    private static Result<ManifoldOutcome> RunOperation(
-        IMesh left,
-        IMesh right,
-        MeshMetadata metadata,
-        NativeBooleanOp op)
-    {
-        if (!ManifoldNative.IsAvailable)
-        {
-            return Result.Failure<ManifoldOutcome>(ManifoldErrors.Unavailable);
-        }
-
-        try
-        {
-            return RunOperationCore(left, right, metadata, op);
-        }
-        catch (Exception exception) when (exception is DllNotFoundException or BadImageFormatException)
-        {
             // The library is absent or unusable on this machine. Ordinary on a platform
             // whose binaries do not ship, and a caller with a managed fallback should use it.
-            return Result.Failure<ManifoldOutcome>(ManifoldErrors.Unusable(exception));
+            return Result.Failure<T>(ManifoldErrors.Unusable(exception));
         }
         catch (Exception exception) when (exception is EntryPointNotFoundException or MarshalDirectiveException)
         {
@@ -627,66 +595,7 @@ internal static unsafe class ManifoldKernel
             // this code or a version mismatch, not a platform limitation, and it is reported
             // as its own failure so it cannot be mistaken for one: quietly substituting a
             // different kernel would hide exactly the bug that needs fixing.
-            return Result.Failure<ManifoldOutcome>(ManifoldErrors.BindingMismatch(exception));
-        }
-    }
-
-    private static Result<ManifoldOutcome> RunOperationCore(
-        IMesh left,
-        IMesh right,
-        MeshMetadata metadata,
-        NativeBooleanOp op)
-    {
-        var leftPtr = IntPtr.Zero;
-        var rightPtr = IntPtr.Zero;
-        var resultPtr = IntPtr.Zero;
-
-        // Every handle is owned by the finally from the moment it exists, so a P/Invoke that
-        // throws part way through - converting the right operand, say - cannot strand the left.
-        try
-        {
-            var leftManifoldResult = ToManifold(left);
-            if (leftManifoldResult.IsFailure)
-            {
-                return Result.Failure<ManifoldOutcome>(leftManifoldResult.Error);
-            }
-
-            leftPtr = leftManifoldResult.Value.Handle;
-
-            var rightManifoldResult = ToManifold(right);
-            if (rightManifoldResult.IsFailure)
-            {
-                return Result.Failure<ManifoldOutcome>(rightManifoldResult.Error);
-            }
-
-            rightPtr = rightManifoldResult.Value.Handle;
-
-            var provenance = leftManifoldResult.Value.Merged || rightManifoldResult.Value.Merged
-                ? ManifoldProvenance.NativeAfterMergingOperands
-                : ManifoldProvenance.Native;
-
-            resultPtr = op(ManifoldNative.manifold_alloc_manifold(), leftPtr, rightPtr);
-
-            var status = ManifoldNative.manifold_status(resultPtr);
-            if (status != ManifoldError.NoError)
-            {
-                return Result.Failure<ManifoldOutcome>(ManifoldErrors.OperationFailed(status));
-            }
-
-            var mesh = FromManifold(resultPtr, metadata);
-            return mesh.IsFailure
-                ? Result.Failure<ManifoldOutcome>(mesh.Error)
-                : Result.Success(new ManifoldOutcome(mesh.Value, provenance));
-        }
-        finally
-        {
-            foreach (var handle in new[] { resultPtr, leftPtr, rightPtr })
-            {
-                if (handle != IntPtr.Zero)
-                {
-                    ManifoldNative.manifold_delete_manifold(handle);
-                }
-            }
+            return Result.Failure<T>(ManifoldErrors.BindingMismatch(exception));
         }
     }
 

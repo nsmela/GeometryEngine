@@ -29,14 +29,13 @@ internal sealed class ManifoldBooleanOperations(IBooleans? fallback = null) : IB
 
     private readonly IBooleans? _fallback = fallback;
 
-    public Result<IMesh> Union(IMesh meshA, IMesh meshB) =>
-        Run(meshA, meshB, "Union", ManifoldKernel.Union, static (f, a, b) => f.Union(a, b));
+    // A pairwise call is a description one step long, so there is one way into the kernel and
+    // one place that decides when to fall back.
+    public Result<IMesh> Union(IMesh meshA, IMesh meshB) => Evaluate(Solid.Of(meshA).Union(meshB));
 
-    public Result<IMesh> Subtract(IMesh meshA, IMesh meshB) =>
-        Run(meshA, meshB, "Subtract", ManifoldKernel.Subtract, static (f, a, b) => f.Subtract(a, b));
+    public Result<IMesh> Subtract(IMesh meshA, IMesh meshB) => Evaluate(Solid.Of(meshA).Subtract(meshB));
 
-    public Result<IMesh> Intersect(IMesh meshA, IMesh meshB) =>
-        Run(meshA, meshB, "Intersect", ManifoldKernel.Intersect, static (f, a, b) => f.Intersect(a, b));
+    public Result<IMesh> Intersect(IMesh meshA, IMesh meshB) => Evaluate(Solid.Of(meshA).Intersect(meshB));
 
     public Result<IMesh> Union(ImmutableArray<IMesh> meshes)
     {
@@ -156,41 +155,6 @@ internal sealed class ManifoldBooleanOperations(IBooleans? fallback = null) : IB
             outcome.Provenance == ManifoldProvenance.NativeAfterMergingOperands ? NativeMergedProducer : NativeProducer));
 
     private static IMesh FellBack(IMesh mesh) => mesh.WithMetadata(mesh.Metadata.WithCreatedBy(FallbackProducer));
-
-    private delegate Result<ManifoldOutcome> NativeOperation(IMesh left, IMesh right, MeshMetadata metadata);
-
-    private delegate Result<IMesh> FallbackOperation(IBooleans fallback, IMesh left, IMesh right);
-
-    private Result<IMesh> Run(
-        IMesh meshA,
-        IMesh meshB,
-        string operation,
-        NativeOperation native,
-        FallbackOperation fallback)
-    {
-        var operands = BooleanOperands.Validate(meshA, meshB);
-        if (operands.IsFailure)
-        {
-            return Result.Failure<IMesh>(operands.Error);
-        }
-
-        var metadata = BooleanOperands.DescribeResult(meshA, meshB, operation);
-        var result = native(meshA, meshB, metadata);
-
-        if (result.IsSuccess)
-        {
-            return Result.Success(Produced(result.Value));
-        }
-
-        if (_fallback is null || !ShouldFallBack(result.Error))
-        {
-            return Result.Failure<IMesh>(result.Error);
-        }
-
-        var fallen = fallback(_fallback, meshA, meshB);
-
-        return fallen.IsFailure ? fallen : Result.Success(FellBack(fallen.Value));
-    }
 
     /// <summary>
     /// Whether a native failure is one the managed kernel might still handle.
