@@ -95,6 +95,24 @@ public sealed class SolidDescriptionTests
     }
 
     [Fact]
+    public void Each_part_is_counted_once_for_every_step_built_from_it_and_the_whole_once_for_being_read()
+    {
+        var common = Solid.Of(A).Subtract(B);
+        var doubled = common.Union(common);
+        var query = doubled.Intersect(A);
+
+        var uses = SolidWalk.Uses(SolidWalk.PostOrder(query), query);
+
+        Check.Equal(2, uses.OfNode[common]);
+        Check.Equal(1, uses.OfNode[doubled]);
+        Check.Equal(1, uses.OfNode[query]);
+
+        // A stands at two leaves, used once each; B at one.
+        Check.Equal(2, uses.OfGeometry[SolidWalk.GeometryOf(A)]);
+        Check.Equal(1, uses.OfGeometry[SolidWalk.GeometryOf(B)]);
+    }
+
+    [Fact]
     public void A_chain_a_hundred_thousand_steps_long_is_walked_without_running_out_of_stack()
     {
         var query = Solid.Of(A);
@@ -182,6 +200,21 @@ public sealed class SolidEvaluationTests
         // Five leaves, three meshes: the body twice, and the cavity under two names.
         Check.Equal(3, evaluation.MeshesImported);
         Check.RelativelyClose(56, Fixtures.VolumeOf(evaluation.Outcome.Mesh), 1e-9);
+    }
+
+    [Fact]
+    public void Nothing_but_the_result_is_still_held_when_the_kernel_computes_it()
+    {
+        var common = Solid.Of(Body).Subtract(Cavity);
+        var query = common.Union(Block).Union(common.Intersect(Envelope)).Subtract(Cavity);
+
+        var evaluation = ManifoldKernel.Evaluate(query, MeshMetadata.Named("probe")).Value;
+
+        // Manifold folds a run of like operations into one only where it holds the sole
+        // reference to each step. A handle kept here for a step already built into the next
+        // is a second reference, and costs that: the run is computed a step at a time.
+        Check.Equal(1, evaluation.HandlesHeldAtRead);
+        Check.RelativelyClose(88, Fixtures.VolumeOf(evaluation.Outcome.Mesh), 1e-9);
     }
 
     [Fact]

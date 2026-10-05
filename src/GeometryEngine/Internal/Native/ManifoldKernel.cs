@@ -27,7 +27,11 @@ internal readonly record struct ManifoldOutcome(IMesh Mesh, ManifoldProvenance P
 /// The outcome of evaluating a <see cref="Solid"/>, with how many meshes had to be read into the
 /// kernel to do it - one per distinct mesh, which is the saving the description exists to make.
 /// </summary>
-internal readonly record struct ManifoldEvaluation(ManifoldOutcome Outcome, int MeshesImported);
+/// <param name="HandlesHeldAtRead">
+/// How many native solids were still held when the root was read. One - the root itself - is
+/// what lets the kernel fold a run of like steps into a single operation.
+/// </param>
+internal readonly record struct ManifoldEvaluation(ManifoldOutcome Outcome, int MeshesImported, int HandlesHeldAtRead);
 
 /// <summary>
 /// Executes Boolean operations through the native Manifold library.
@@ -194,28 +198,47 @@ internal static unsafe class ManifoldKernel
     /// out. Manifold's booleans are lazy - composing one records it and computes nothing - so the
     /// work happens once, when the root is read, with the whole description in view.
     ///
-    /// Every handle made here is owned by the one <c>finally</c> from the moment it exists and
-    /// freed before this returns, whichever way it returns. Nothing native outlives the call, so
-    /// there is no lifetime for a caller, a finalizer or another thread to get wrong.
+    /// A handle is let go the moment the last step that uses it has been composed, and that is
+    /// not housekeeping. Manifold folds a run of like operations into one - a block less nine
+    /// tools becomes the block less the union of the nine - but only through steps it holds the
+    /// sole reference to. A handle kept here is a second reference, and with it the run is
+    /// computed one step at a time: measured at 2.0x to 2.7x the time on the mould in
+    /// <c>bench query</c>, 1,235 ms against 451 ms at 100k triangles.
+    ///
+    /// Whatever is still held when this returns, by any path, is freed in the one
+    /// <c>finally</c>. Nothing native outlives the call, so there is no lifetime for a caller, a
+    /// finalizer or another thread to get wrong.
     /// </summary>
     /// <remarks>
     /// The status is read at the root alone. Reading it at a step would force that step to be
-    /// computed on its own, which is exactly the round trip this exists to avoid, and would keep
-    /// the kernel from reordering a run of like operations. The price is that an operation which
-    /// fails is reported for the description, not for a step; a mesh the kernel will not take is
-    /// still named, since that is known when it is read in.
+    /// computed on its own, which is exactly the round trip this exists to avoid. The price is
+    /// that an operation which fails is reported for the description, not for a step; a mesh the
+    /// kernel will not take is still named, since that is known when it is read in.
     /// </remarks>
     public static Result<ManifoldEvaluation> Evaluate(Solid query, MeshMetadata metadata) =>
         Guarded(() =>
         {
-            var owned = new List<IntPtr>();
+            var order = SolidWalk.PostOrder(query);
+            var uses = SolidWalk.Uses(order, query);
+
+            // Handle -> the uses of it still to come. A handle leaves when that reaches zero.
+            var held = new Dictionary<IntPtr, int>();
             var imported = new Dictionary<object, IntPtr>(ReferenceEqualityComparer.Instance);
             var built = new Dictionary<Solid, IntPtr>(ReferenceEqualityComparer.Instance);
             var merged = false;
 
+            void Release(IntPtr handle)
+            {
+                if (--held[handle] == 0)
+                {
+                    held.Remove(handle);
+                    ManifoldNative.manifold_delete_manifold(handle);
+                }
+            }
+
             try
             {
-                foreach (var node in SolidWalk.PostOrder(query))
+                foreach (var node in order)
                 {
                     if (node is Solid.Leaf leaf)
                     {
@@ -229,7 +252,7 @@ internal static unsafe class ManifoldKernel
                             }
 
                             known = operand.Value.Handle;
-                            owned.Add(known);
+                            held.Add(known, uses.OfGeometry[geometry]);
                             imported.Add(geometry, known);
                             merged |= operand.Value.Merged;
                         }
@@ -239,17 +262,22 @@ internal static unsafe class ManifoldKernel
                     }
 
                     var step = (Solid.Combined)node;
-                    var combined = Combine(step.Op, built[step.Left], built[step.Right]);
+                    var (left, right) = (built[step.Left], built[step.Right]);
+                    var combined = Combine(step.Op, left, right);
                     if (combined == IntPtr.Zero)
                     {
                         return Result.Failure<ManifoldEvaluation>(ManifoldErrors.UnknownOperation(step.Op));
                     }
 
-                    owned.Add(combined);
+                    held.Add(combined, uses.OfNode[node]);
                     built.Add(node, combined);
+                    Release(left);
+                    Release(right);
                 }
 
                 var root = built[query];
+                var heldAtRead = held.Count;
+
                 var status = ManifoldNative.manifold_status(root);
                 if (status != ManifoldError.NoError)
                 {
@@ -260,11 +288,11 @@ internal static unsafe class ManifoldKernel
                 return mesh.IsFailure
                     ? Result.Failure<ManifoldEvaluation>(mesh.Error)
                     : Result.Success(new ManifoldEvaluation(
-                        new ManifoldOutcome(mesh.Value, Provenance(merged)), imported.Count));
+                        new ManifoldOutcome(mesh.Value, Provenance(merged)), imported.Count, heldAtRead));
             }
             finally
             {
-                foreach (var handle in owned)
+                foreach (var handle in held.Keys)
                 {
                     ManifoldNative.manifold_delete_manifold(handle);
                 }
