@@ -5,10 +5,11 @@ namespace GeometryEngine;
 /// belong to, so that a mesh used again is not read in again.
 /// </summary>
 /// <remarks>
-/// Reading a mesh into the kernel costs about as much as a boolean on it, so keeping it roughly
-/// halves the cost of every later operation that mesh takes part in. The price is memory outside
-/// the managed heap: about 212 bytes a triangle, some nine times what the mesh itself holds,
-/// for as long as the mesh is reachable. It is released when the mesh is collected.
+/// Reading a mesh into the kernel costs about as much as a boolean on it. Keeping it took
+/// 43-46% off repeated cuts of one body, and off a chain of calls each fed the last one's result,
+/// in <c>bench retain</c>. The price is memory outside the managed heap: about 212 bytes a
+/// triangle, some nine times what the mesh itself holds, for as long as the mesh is reachable.
+/// It is released when the mesh is collected.
 /// </remarks>
 public enum SolidRetention
 {

@@ -71,6 +71,18 @@ chained, and one `Solid` description handed to `IBooleans.Evaluate`. Prints the 
 triangle count, volume and producing kernel for each, so a faster line that built a different
 solid cannot pass unnoticed. See `docs/boolean-query.md`.
 
+### Compare an engine that keeps native solids with one that does not
+
+```
+dotnet run -c Release -- retain
+```
+
+Runs three shapes of work on `SolidRetention.None` and on `SolidRetention.Keep`: one body cut
+eight times, a chain of pairwise calls each fed the last one's result, and a description
+evaluated again with one channel replaced. Every run starts from meshes the kernel has not
+seen. Prints the median time, the volume, and how many solids the engine was keeping when the
+run finished. `query` runs with nothing kept, so the two modes measure one thing each.
+
 ### Probe for memory leaks
 
 ```

@@ -71,8 +71,8 @@ public sealed class BspGeometryEngine : IGeometryEngine
 
     /// <summary>
     /// <see cref="CreateWithManifold()"/>, saying whether the native kernel keeps the solids it
-    /// reads in and builds. Keeping them is the default and roughly halves the cost of using a
-    /// mesh again; <see cref="SolidRetention.None"/> trades that for the native memory they hold.
+    /// reads in and builds. Keeping them is the default and makes using a mesh again markedly
+    /// cheaper; <see cref="SolidRetention.None"/> gives that up for the native memory they hold.
     /// </summary>
     public static IGeometryEngine CreateWithManifold(SolidRetention retention) =>
         new BspGeometryEngine(

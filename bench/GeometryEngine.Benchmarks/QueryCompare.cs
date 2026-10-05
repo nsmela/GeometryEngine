@@ -24,7 +24,10 @@ internal static class QueryCompare
 
     public static int Run()
     {
-        var engine = BspGeometryEngine.Create();
+        // Nothing kept between calls: these meshes are reused run after run, and an engine that
+        // kept their solids would be timing its own memory rather than the three ways of asking.
+        // What keeping adds is `retain`'s to measure.
+        var engine = BspGeometryEngine.CreateWithManifold(SolidRetention.None);
         Console.WriteLine($"Manifold native available: {ManifoldNative.IsAvailable}");
         Console.WriteLine();
 

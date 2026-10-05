@@ -211,8 +211,9 @@ internal static unsafe class ManifoldKernel
     /// <c>bench query</c>, 1,235 ms against 451 ms at 100k triangles.
     ///
     /// Whatever is still held when this returns, by any path, is freed in the one
-    /// <c>finally</c>. Nothing native outlives the call, so there is no lifetime for a caller, a
-    /// finalizer or another thread to get wrong.
+    /// <c>finally</c>. Nothing this call owns outlives it. What <see cref="SolidRetention.Keep"/>
+    /// leaves with a mesh is a separate reference that the mesh owns, and this call only ever
+    /// holds copies of it: see <see cref="RetainedSolid"/>.
     /// </summary>
     /// <remarks>
     /// The status is read at the root alone. Reading it at a step would force that step to be

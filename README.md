@@ -17,6 +17,11 @@ read by the kernel once and only the final solid is written out:
 var mould = engine.Booleans.Evaluate(Solid.Of(block).Subtract(bolus).Union(lug).Intersect(envelope));
 ```
 
+By default the kernel also keeps the solid it read in with each mesh, and the one behind each
+result, so a mesh used again is not read in again. That costs about 212 bytes of native memory
+per triangle while the mesh lives; `BspGeometryEngine.CreateWithManifold(SolidRetention.None)`
+turns it off.
+
 See [`docs/boolean-query.md`](docs/boolean-query.md) for the design and measurements.
 
 **192 tests, all green.** Fabolus's own suite (238 tests) passes against it through the thin
