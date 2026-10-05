@@ -23,6 +23,7 @@ internal sealed class MeshMeasurements
     private TopologyEntry? _topology;
     private NormalsEntry? _normals;
     private ISpatialIndex? _index;
+    private object? _nativeSolid;
     private readonly object _indexGate = new();
 
     /// <summary>
@@ -48,6 +49,21 @@ internal sealed class MeshMeasurements
             return _index!;
         }
     }
+
+    /// <summary>
+    /// The solid a native kernel has kept for this geometry, if it has kept one. Opaque here:
+    /// this assembly knows no kernel, only that one may leave something with a mesh. Like the
+    /// index it is not carried through a transform, since it is the solid where it stood.
+    /// </summary>
+    public object? NativeSolid => Volatile.Read(ref _nativeSolid);
+
+    /// <summary>
+    /// Keeps <paramref name="candidate"/> unless something is kept already, and returns whichever
+    /// is kept. Two threads reading the same mesh in at once both offer one; the first is kept and
+    /// the second gets the first back, to release its own.
+    /// </summary>
+    public object KeepNativeSolid(object candidate) =>
+        Interlocked.CompareExchange(ref _nativeSolid, candidate, null) ?? candidate;
 
     public MeshStatistics? Statistics
     {

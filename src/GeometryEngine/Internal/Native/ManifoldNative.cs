@@ -83,6 +83,13 @@ internal static unsafe class ManifoldNative
     [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
     public static extern void manifold_delete_manifold(IntPtr m);
 
+    /// <summary>
+    /// A second handle to the same solid. Manifold's solids are immutable and shared by
+    /// reference, so this copies a pointer, not geometry.
+    /// </summary>
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    public static extern IntPtr manifold_copy(IntPtr mem, IntPtr m);
+
     [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
     public static extern IntPtr manifold_alloc_meshgl64();
 

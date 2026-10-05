@@ -74,7 +74,7 @@ internal static unsafe class ManifoldKernel
             {
                 foreach (var input in meshes)
                 {
-                    var operand = ToManifold(input);
+                    var operand = Acquire(input, retention);
                     if (operand.IsFailure)
                     {
                         return Result.Failure<ManifoldOutcome>(operand.Error);
@@ -98,7 +98,7 @@ internal static unsafe class ManifoldKernel
                     return Result.Failure<ManifoldOutcome>(ManifoldErrors.OperationFailed(status));
                 }
 
-                var mesh = FromManifold(result, metadata);
+                var mesh = Produce(result, metadata, retention);
                 return mesh.IsFailure
                     ? Result.Failure<ManifoldOutcome>(mesh.Error)
                     : Result.Success(new ManifoldOutcome(mesh.Value, Provenance(merged)));
@@ -140,7 +140,7 @@ internal static unsafe class ManifoldKernel
                 return Result.Failure<(ManifoldOutcome, ManifoldOutcome)>(ManifoldErrors.EmptyOperand(mesh.Metadata.Name));
             }
 
-            var operand = ToManifold(mesh);
+            var operand = Acquire(mesh, retention);
             if (operand.IsFailure)
             {
                 return Result.Failure<(ManifoldOutcome, ManifoldOutcome)>(operand.Error);
@@ -170,13 +170,13 @@ internal static unsafe class ManifoldKernel
                     }
                 }
 
-                var frontMesh = FromManifold(front, frontMetadata);
+                var frontMesh = Produce(front, frontMetadata, retention);
                 if (frontMesh.IsFailure)
                 {
                     return Result.Failure<(ManifoldOutcome, ManifoldOutcome)>(frontMesh.Error);
                 }
 
-                var backMesh = FromManifold(back, backMetadata);
+                var backMesh = Produce(back, backMetadata, retention);
                 if (backMesh.IsFailure)
                 {
                     return Result.Failure<(ManifoldOutcome, ManifoldOutcome)>(backMesh.Error);
@@ -232,6 +232,7 @@ internal static unsafe class ManifoldKernel
             var imported = new Dictionary<object, IntPtr>(ReferenceEqualityComparer.Instance);
             var built = new Dictionary<Solid, IntPtr>(ReferenceEqualityComparer.Instance);
             var merged = false;
+            var readIn = 0;
 
             void Release(IntPtr handle)
             {
@@ -251,12 +252,13 @@ internal static unsafe class ManifoldKernel
                         var geometry = SolidWalk.GeometryOf(leaf.Mesh);
                         if (!imported.TryGetValue(geometry, out var known))
                         {
-                            var operand = ToManifold(leaf.Mesh);
+                            var operand = Acquire(leaf.Mesh, retention);
                             if (operand.IsFailure)
                             {
                                 return Result.Failure<ManifoldEvaluation>(operand.Error);
                             }
 
+                            readIn += operand.Value.ReadIn ? 1 : 0;
                             known = operand.Value.Handle;
                             held.Add(known, uses.OfGeometry[geometry]);
                             imported.Add(geometry, known);
@@ -290,11 +292,11 @@ internal static unsafe class ManifoldKernel
                     return Result.Failure<ManifoldEvaluation>(ManifoldErrors.OperationFailed(status));
                 }
 
-                var mesh = FromManifold(root, metadata);
+                var mesh = Produce(root, metadata, retention);
                 return mesh.IsFailure
                     ? Result.Failure<ManifoldEvaluation>(mesh.Error)
                     : Result.Success(new ManifoldEvaluation(
-                        new ManifoldOutcome(mesh.Value, Provenance(merged)), imported.Count, heldAtRead));
+                        new ManifoldOutcome(mesh.Value, Provenance(merged)), readIn, heldAtRead));
             }
             finally
             {
@@ -633,8 +635,82 @@ internal static unsafe class ManifoldKernel
         }
     }
 
-    /// <summary>A live native manifold, and whether its geometry had to be welded to build it.</summary>
-    private readonly record struct Operand(IntPtr Handle, bool Merged);
+    /// <summary>
+    /// A live native manifold owned by whoever asked for it, whether its geometry had to be
+    /// welded to build it, and whether it was read in for this request or was already kept.
+    /// </summary>
+    private readonly record struct Operand(IntPtr Handle, bool Merged, bool ReadIn);
+
+    /// <summary>
+    /// A mesh as a native solid: a copy of the one kept with it where there is one, and otherwise
+    /// read in - and, under <see cref="SolidRetention.Keep"/>, kept for the next request. Either
+    /// way the handle returned is the caller's own, to free as it frees any other.
+    /// </summary>
+    private static Result<Operand> Acquire(IMesh mesh, SolidRetention retention)
+    {
+        if (retention == SolidRetention.Keep
+            && mesh is ImmutableMesh { Measurements.NativeSolid: RetainedSolid kept })
+        {
+            return Result.Success(new Operand(kept.Copy(), kept.Merged, ReadIn: false));
+        }
+
+        var operand = ToManifold(mesh);
+        if (operand.IsFailure || retention == SolidRetention.None)
+        {
+            return operand;
+        }
+
+        try
+        {
+            Keep(mesh, operand.Value.Handle, operand.Value.Merged);
+            return operand;
+        }
+        catch
+        {
+            // The handle has no owner yet: the caller only takes it from a success.
+            ManifoldNative.manifold_delete_manifold(operand.Value.Handle);
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// The mesh a finished solid stands for and, under <see cref="SolidRetention.Keep"/>, that
+    /// solid kept with it - so a result used as the next operation's operand never leaves the
+    /// kernel. The handle stays the caller's to free.
+    /// </summary>
+    /// <param name="solid">A solid whose status has been read, so it is evaluated and will not change.</param>
+    private static Result<IMesh> Produce(IntPtr solid, MeshMetadata metadata, SolidRetention retention)
+    {
+        var mesh = FromManifold(solid, metadata);
+        if (mesh.IsSuccess && retention == SolidRetention.Keep && !mesh.Value.IsEmpty)
+        {
+            // Welded on the way in or not, what came out is a solid the kernel made itself.
+            Keep(mesh.Value, solid, merged: false);
+        }
+
+        return mesh;
+    }
+
+    /// <summary>
+    /// Leaves a second reference to <paramref name="solid"/> with the mesh, unless one is there.
+    /// A mesh that is not an <see cref="ImmutableMesh"/> has nowhere to keep one.
+    /// </summary>
+    private static void Keep(IMesh mesh, IntPtr solid, bool merged)
+    {
+        if (mesh is not ImmutableMesh immutable || immutable.Measurements.NativeSolid is not null)
+        {
+            return;
+        }
+
+        var candidate = new RetainedSolid(
+            ManifoldNative.manifold_copy(ManifoldNative.manifold_alloc_manifold(), solid), merged, mesh.TriangleCount);
+
+        // Another thread may have read the same mesh in meanwhile. One is kept; ours goes.
+        if (!ReferenceEquals(immutable.Measurements.KeepNativeSolid(candidate), candidate))
+        {
+            candidate.Dispose();
+        }
+    }
 
     private static Result<Operand> ToManifold(IMesh mesh)
     {
@@ -706,7 +782,7 @@ internal static unsafe class ManifoldKernel
             }
 
             // Ownership passes to the caller.
-            var operand = new Operand(manifold, merged);
+            var operand = new Operand(manifold, merged, ReadIn: true);
             manifold = IntPtr.Zero;
             return Result.Success(operand);
         }
