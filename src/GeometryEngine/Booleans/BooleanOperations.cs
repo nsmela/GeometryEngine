@@ -61,6 +61,13 @@ internal sealed class BooleanOperations(IToleranceStrategy tolerance) : IBoolean
     public Result<IMesh> Evaluate(Solid query) => new EvaluateHandler(this).Handle(new EvaluateRequest(query));
 
     /// <summary>The managed kernel keeps nothing between calls, so there is nothing to read ahead.</summary>
+    /// <summary>The managed kernel keeps nothing between calls, so there is nothing to let go.</summary>
+    public bool Release(IMesh mesh)
+    {
+        ArgumentNullException.ThrowIfNull(mesh);
+        return false;
+    }
+
     public Result Prepare(IMesh mesh)
     {
         ArgumentNullException.ThrowIfNull(mesh);

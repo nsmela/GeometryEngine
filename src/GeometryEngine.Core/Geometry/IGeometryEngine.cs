@@ -101,6 +101,20 @@ public interface IBooleans
     /// kernel's guarantee of a watertight result, and this is the earliest that can be known.
     /// </summary>
     Result Prepare(IMesh mesh);
+
+    /// <summary>
+    /// Lets go of what the kernel keeps for a mesh, now, without waiting for the mesh to be
+    /// collected. For a caller that holds meshes it is not about to operate on - previews in an
+    /// undo stack, say - where each would otherwise hold several times its own size in the
+    /// kernel for as long as it is held.
+    ///
+    /// Like <see cref="Prepare"/> it is a hint, safe for any mesh at any time from any thread.
+    /// The mesh is untouched and remains usable; the next operation on it reads it in again.
+    /// Copies made with <see cref="IMesh.WithMetadata"/> share what is kept, so releasing one
+    /// releases it for all of them. An operation already running keeps what it has taken.
+    /// </summary>
+    /// <returns>Whether anything was let go.</returns>
+    bool Release(IMesh mesh);
 }
 
 /// <summary>

@@ -109,6 +109,12 @@ internal sealed class ManifoldBooleanOperations(IBooleans? fallback = null, Soli
         return fallen.IsFailure ? fallen : Result.Success(FellBack(fallen.Value));
     }
 
+    public bool Release(IMesh mesh)
+    {
+        ArgumentNullException.ThrowIfNull(mesh);
+        return false;
+    }
+
     public Result Prepare(IMesh mesh)
     {
         ArgumentNullException.ThrowIfNull(mesh);
