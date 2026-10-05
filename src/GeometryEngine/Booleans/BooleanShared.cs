@@ -1,3 +1,6 @@
+using GeometryEngine.Internal;
+using GeometryEngine.Transforms;
+
 namespace GeometryEngine.Booleans;
 
 /// <summary>Errors that any boolean slice can report.</summary>
@@ -9,6 +12,9 @@ internal static class BooleanErrors
 
     public static Error KernelFailure(string description) =>
         new("Booleans.KernelFailure", description);
+
+    public static Error UnknownTransform(SolidTransform transform) =>
+        new("Booleans.UnknownTransform", $"'{transform.GetType().Name}' is not a transform a description can hold.");
 
     public static Error UnknownOperation(BooleanOp op) =>
         new("Booleans.UnknownOperation", $"'{op}' is not a boolean operation.");
@@ -41,6 +47,38 @@ internal static class BooleanOperands
         {
             Annotations = left.Metadata.Annotations?.Carry(MeshOperation.Combine),
         };
+
+    /// <summary>
+    /// What every transform in a description must satisfy before any of it is evaluated - the same
+    /// conditions the transform slices put on a mesh. Building a description cannot fail, so this
+    /// is where a scale that would turn a solid inside out, or a move to nowhere, is refused.
+    /// </summary>
+    public static Result ValidateTransforms(IReadOnlyList<Solid> order)
+    {
+        foreach (var node in order)
+        {
+            if (node is not Solid.Transformed moved)
+            {
+                continue;
+            }
+
+            switch (moved.Transform)
+            {
+                case SolidTransform.Translation shift when !shift.Offset.IsFinite:
+                case SolidTransform.Scaling scale when !scale.Factors.IsFinite:
+                case SolidTransform.Turn turn when !IsFinite(turn.Rotation):
+                    return Result.Failure(TransformErrors.NonFiniteTransform);
+
+                case SolidTransform.Scaling { Factors: var factors } when factors.X <= 0 || factors.Y <= 0 || factors.Z <= 0:
+                    return Result.Failure(TransformErrors.MirroringScale);
+            }
+        }
+
+        return Result.Success();
+    }
+
+    private static bool IsFinite(Rotation rotation) =>
+        double.IsFinite(rotation.W) && double.IsFinite(rotation.X) && double.IsFinite(rotation.Y) && double.IsFinite(rotation.Z);
 
     /// <summary>The batch precondition: at least one operand, and every one of them non-empty.</summary>
     public static Result Validate(IReadOnlyList<IMesh> meshes)
@@ -82,6 +120,13 @@ internal static class BooleanOperands
     /// </summary>
     public static MeshMetadata DescribeQuery(Solid query, IReadOnlyList<IMesh> leaves)
     {
+        // Moved and nothing else: still the subject's own geometry, somewhere else. It keeps its
+        // name and whatever of its annotations survive a move, as a transform of the mesh does.
+        if (query is Solid.Transformed && !SolidWalk.PostOrder(query).Any(node => node is Solid.Combined))
+        {
+            return leaves[0].Metadata.CarriedThrough(MeshOperation.Transform, "GeometryEngine.Booleans");
+        }
+
         if (query is Solid.Combined { Left: Solid.Leaf left, Right: Solid.Leaf right } step)
         {
             return DescribeResult(left.Mesh, right.Mesh, step.Op.ToString());

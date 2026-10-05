@@ -84,6 +84,35 @@ internal static unsafe class ManifoldNative
     public static extern void manifold_delete_manifold(IntPtr m);
 
     /// <summary>
+    /// The solid scaled about the origin. Like every transform here it is recorded, not applied:
+    /// Manifold multiplies it into whatever transform the solid already carries and moves the
+    /// vertices once, when the solid is next needed.
+    /// </summary>
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    public static extern IntPtr manifold_scale(IntPtr mem, IntPtr m, double x, double y, double z);
+
+    /// <summary>
+    /// The solid under an affine map given by its columns: where the x, y and z axes go, then
+    /// the translation.
+    /// </summary>
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    public static extern IntPtr manifold_transform(
+        IntPtr mem,
+        IntPtr m,
+        double x1,
+        double y1,
+        double z1,
+        double x2,
+        double y2,
+        double z2,
+        double x3,
+        double y3,
+        double z3,
+        double x4,
+        double y4,
+        double z4);
+
+    /// <summary>
     /// A second handle to the same solid. Manifold's solids are immutable and shared by
     /// reference, so this copies a pointer, not geometry.
     /// </summary>

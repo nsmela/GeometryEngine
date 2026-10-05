@@ -78,6 +78,14 @@ internal sealed class ManifoldBooleanOperations(IBooleans? fallback = null, Soli
             return Result.Failure<IMesh>(operands.Error);
         }
 
+        // Said here rather than left to the kernel: a transform that cannot be applied is the
+        // caller's mistake, and the kernel would apply it without complaint.
+        var transforms = BooleanOperands.ValidateTransforms(SolidWalk.PostOrder(query));
+        if (transforms.IsFailure)
+        {
+            return Result.Failure<IMesh>(transforms.Error);
+        }
+
         if (query is Solid.Leaf only)
         {
             return Result.Success(only.Mesh);

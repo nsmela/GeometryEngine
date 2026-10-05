@@ -207,6 +207,47 @@ public sealed class SolidTransformTests
         }
     }
 
+    [Fact]
+    public void A_description_that_fails_after_moving_parts_frees_the_moved_solids()
+    {
+        var withoutFallback = new ManifoldBooleanOperations();
+        var a = Fixtures.Sphere(Vec3.Zero, 10, 96);
+        var b = Fixtures.Sphere(new Vec3(5, 0, 0), 10, 96);
+        var box = Fixtures.Box(new Vec3(10, 10, 10), new Vec3(12, 12, 12));
+        var lidless = Fixtures.Engine.CreateMesh(box.Vertices, box.Triangles[..^6], MeshMetadata.Named("lidless")).Value;
+
+        // Each moved part is a handle of its own holding the sphere it moves, and all three exist
+        // by the time the open box is refused.
+        var failing = Solid.Of(a).Translate(new Vec3(1, 0, 0))
+            .Subtract(Solid.Of(b).Rotate(Direction.Z, 0.3))
+            .Scale(new Vec3(1.5, 1, 1))
+            .Union(lidless);
+
+        long PrivateBytes()
+        {
+            GC.Collect();
+            GC.WaitForPendingFinalizers();
+            GC.Collect();
+            using var process = System.Diagnostics.Process.GetCurrentProcess();
+            return process.PrivateMemorySize64;
+        }
+
+        for (var i = 0; i < 20; i++)
+        {
+            Check.True(withoutFallback.Evaluate(failing).IsFailure);
+        }
+
+        var before = PrivateBytes();
+        for (var i = 0; i < 400; i++)
+        {
+            Check.True(withoutFallback.Evaluate(failing).IsFailure);
+        }
+
+        var retained = PrivateBytes() - before;
+        const long Ceiling = 64L * 1024 * 1024;
+        Check.True(retained <= Ceiling, $"Retained {retained / 1024}KB over 400 failing descriptions (ceiling {Ceiling / 1024}KB)");
+    }
+
     private static MeshStatistics Statistics(IMesh mesh) => Fixtures.Engine.Evaluators.GetStatistics(mesh).Value;
 
     private static int IndexOf(IReadOnlyList<Solid> order, Solid node)

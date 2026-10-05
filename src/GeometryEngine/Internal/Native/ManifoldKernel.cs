@@ -270,9 +270,21 @@ internal static unsafe class ManifoldKernel
                         continue;
                     }
 
-                    if (node is Solid.Transformed)
+                    if (node is Solid.Transformed placed)
                     {
-                        return Result.Failure<ManifoldEvaluation>(new Error("Booleans.NotYet", "A moved part cannot be evaluated yet."));
+                        // Recorded on the solid, not applied to it: see ManifoldNative. A mesh
+                        // kept in the kernel is therefore moved without being read in again.
+                        var source = built[placed.Source];
+                        var moved = Move(placed.Transform, source);
+                        if (moved == IntPtr.Zero)
+                        {
+                            return Result.Failure<ManifoldEvaluation>(ManifoldErrors.UnknownTransform(placed.Transform));
+                        }
+
+                        held.Add(moved, uses.OfNode[node]);
+                        built.Add(node, moved);
+                        Release(source);
+                        continue;
                     }
 
                     var step = (Solid.Combined)node;
@@ -335,6 +347,31 @@ internal static unsafe class ManifoldKernel
             ManifoldNative.manifold_delete_manifold(operand.Value.Handle);
             return Result.Success(operand.Value.ReadIn);
         });
+
+    /// <summary>A solid under one transform, or zero for a transform that is not one of the three.</summary>
+    private static IntPtr Move(SolidTransform transform, IntPtr solid)
+    {
+        switch (transform)
+        {
+            case SolidTransform.Translation shift:
+                return ManifoldNative.manifold_translate(
+                    ManifoldNative.manifold_alloc_manifold(), solid, shift.Offset.X, shift.Offset.Y, shift.Offset.Z);
+
+            case SolidTransform.Scaling scale:
+                return ManifoldNative.manifold_scale(
+                    ManifoldNative.manifold_alloc_manifold(), solid, scale.Factors.X, scale.Factors.Y, scale.Factors.Z);
+
+            case SolidTransform.Turn turn:
+                // Where the rotation sends each axis is a column of its matrix, and asking the
+                // rotation itself keeps this in step with the managed transform by construction.
+                var (x, y, z) = (turn.Rotation.Apply(Vec3.UnitX), turn.Rotation.Apply(Vec3.UnitY), turn.Rotation.Apply(Vec3.UnitZ));
+                return ManifoldNative.manifold_transform(
+                    ManifoldNative.manifold_alloc_manifold(), solid, x.X, x.Y, x.Z, y.X, y.Y, y.Z, z.X, z.Y, z.Z, 0, 0, 0);
+
+            default:
+                return IntPtr.Zero;
+        }
+    }
 
     /// <summary>One lazy native boolean, or zero for an operation that is not one.</summary>
     private static IntPtr Combine(BooleanOp op, IntPtr left, IntPtr right) =>
@@ -998,6 +1035,10 @@ internal static class ManifoldErrors
     public static Error UnknownOperation(BooleanOp op) => new(
         "Booleans.UnknownOperation",
         $"'{op}' is not a boolean operation.");
+
+    public static Error UnknownTransform(SolidTransform transform) => new(
+        "Manifold.UnknownTransform",
+        $"'{transform.GetType().Name}' is not a transform the native kernel knows.");
 
     public static readonly Error EmptyResult =
         new("Manifold.EmptyResult", "The operation produced an empty solid.");

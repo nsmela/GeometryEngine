@@ -16,7 +16,7 @@ namespace GeometryEngine.Benchmarks;
 /// declaration works: it prepares, cuts and drops large meshes as fast as it can, never forcing
 /// a collection, and watches how many solids are alive at once and how far the process grows.
 ///
-///   pile-up   the most solids alive at any moment, against the three each round creates. A
+///   pile-up   the most solids alive at any moment, against the one to three a round creates. A
 ///             figure near the total created means nothing was let go until the end.
 ///   stall     the slowest round against the median one. A round many times the median is a
 ///             collection or a backlog of finalizers landing on one caller.
@@ -36,17 +36,36 @@ internal static class RetainSoak
         Console.WriteLine($"Manifold native available: {ManifoldNative.IsAvailable}");
         Console.WriteLine(
             $"{bolus.TriangleCount:N0} triangles a body; a kept solid of that size is about " +
-            $"{bolus.TriangleCount * RetainedSolid.BytesPerTriangle / 1048576.0:N0} MB, and each round keeps three.");
+            $"{bolus.TriangleCount * RetainedSolid.BytesPerTriangle / 1048576.0:N0} MB.");
         Console.WriteLine();
 
         // The same rounds with nothing kept, for what the collector does on the meshes alone.
         var reading = BspGeometryEngine.CreateWithManifold(SolidRetention.None);
         Round(reading, bolus, tool);
         Round(engine, bolus, tool); // warm-up
+        // One body the kernel holds, nudged a little further and cut again each round, as a user
+        // dragging it would: only the results come and go.
+        var held = engine.CreateMesh(bolus.Vertices, bolus.Triangles, bolus.Metadata).Value;
+        _ = engine.Booleans.Prepare(held);
+        _ = engine.Booleans.Prepare(tool);
+        var step = 0;
+        void Drag(IGeometryEngine subject) =>
+            _ = subject.Booleans.Evaluate(Solid.Of(held).Translate(new Vec3(++step * 0.01, 0, 0)).Subtract(tool)).Value;
+
+        var runs = new (int Rounds, IGeometryEngine Subject, string Label, Action<IGeometryEngine> Round)[]
+        {
+            (40, reading, "new meshes each round, nothing kept", subject => Round(subject, bolus, tool)),
+            (40, engine, "new meshes each round, kept", subject => Round(subject, bolus, tool)),
+            (120, engine, "new meshes each round, kept", subject => Round(subject, bolus, tool)),
+            (40, engine, "one kept body dragged and cut", Drag),
+            (120, engine, "one kept body dragged and cut", Drag),
+        };
+
+        Drag(engine);
         var (managedFloor, privateFloor) = Settled();
         var liveFloor = RetainedSolid.Live;
 
-        foreach (var (rounds, subject, label) in new[] { (40, reading, "nothing kept"), (40, engine, "kept"), (120, engine, "kept") })
+        foreach (var (rounds, subject, label, round) in runs)
         {
             var times = new List<double>(rounds);
             long peakLive = 0, peakPrivate = 0;
@@ -56,7 +75,7 @@ internal static class RetainSoak
             for (var i = 0; i < rounds; i++)
             {
                 var watch = Stopwatch.StartNew();
-                Round(subject, bolus, tool);
+                round(subject);
                 times.Add(watch.Elapsed.TotalMilliseconds);
 
                 peakLive = Math.Max(peakLive, RetainedSolid.Live - liveFloor);

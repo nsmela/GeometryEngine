@@ -11,7 +11,7 @@ namespace GeometryEngine.Benchmarks;
 /// Times the same work on an engine that keeps native solids with their meshes and on one that
 /// does not.
 ///
-/// Four shapes of work. A single description cannot cover the first two, because the caller
+/// Five shapes of work. A single description cannot cover the first two, because the caller
 /// wants each result in hand before deciding the next step; the last two are how an interactive
 /// caller meets a mesh for the first time and comes back to a description:
 ///
@@ -21,6 +21,8 @@ namespace GeometryEngine.Benchmarks;
 ///                          result fed to the next. Keeping never reads a result back in.
 ///   the first cut          one cut of a mesh the kernel has not seen, and the same cut after
 ///                          IBooleans.Prepare has read the mesh in ahead of it.
+///   a body moved, then cut a body the kernel holds, shifted and cut: by moving the mesh first, and
+///                          by moving it inside the description.
 ///   a description, redone  the same mould as one description, evaluated a second time with one
 ///                          channel replaced. Keeping reads in only the channel that changed.
 ///
@@ -114,6 +116,29 @@ internal static class RetainCompare
                 };
             });
 
+            // A body the kernel already holds, nudged and cut: moved as a mesh beforehand, which
+            // gives the kernel a new mesh to read in, and moved inside the description, which
+            // moves the solid it has.
+            var nudge = new Vec3(0.5, 0, 0);
+            foreach (var (label, engine) in new[] { ("read in each time", reading), ("kept", keeping) })
+            {
+                Report(engine, $"a body moved, then cut / mesh moved first, {label}", () =>
+                {
+                    var (body, tool) = (Unseen(engine, bolus), Unseen(engine, channels[0]));
+                    _ = engine.Booleans.Prepare(body);
+                    _ = engine.Booleans.Prepare(tool);
+                    return () => engine.Booleans.Subtract(engine.Transforms.Translate(body, nudge).Value, tool).Value;
+                });
+
+                Report(engine, $"a body moved, then cut / moved in the description, {label}", () =>
+                {
+                    var (body, tool) = (Unseen(engine, bolus), Unseen(engine, channels[0]));
+                    _ = engine.Booleans.Prepare(body);
+                    _ = engine.Booleans.Prepare(tool);
+                    return () => engine.Booleans.Evaluate(Solid.Of(body).Translate(nudge).Subtract(tool)).Value;
+                });
+            }
+
             foreach (var (label, engine) in new[] { ("read in each time", reading), ("kept", keeping) })
             {
                 Report(engine, $"a description, redone / {label}", () =>
@@ -158,7 +183,7 @@ internal static class RetainCompare
 
         var median = runs.Select(run => run.Milliseconds).Order().ElementAt(Runs / 2);
         Console.WriteLine(
-            $"  {label,-42} {median,9:N1} ms   volume {runs[^1].Volume,12:N3}   {runs.Max(run => run.Kept),3} solids kept");
+            $"  {label,-62} {median,9:N1} ms   volume {runs[^1].Volume,12:N3}   {runs.Max(run => run.Kept),3} solids kept");
     }
 
     /// <summary>

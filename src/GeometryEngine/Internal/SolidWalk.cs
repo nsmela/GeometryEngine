@@ -45,6 +45,10 @@ internal static class SolidWalk
                 pending.Push((combined.Right, false));
                 pending.Push((combined.Left, false));
             }
+            else if (node is Solid.Transformed moved)
+            {
+                pending.Push((moved.Source, false));
+            }
         }
 
         return ordered;
@@ -89,6 +93,10 @@ internal static class SolidWalk
             {
                 ofNode[combined.Left]++;
                 ofNode[combined.Right]++;
+            }
+            else if (node is Solid.Transformed moved)
+            {
+                ofNode[moved.Source]++;
             }
         }
 

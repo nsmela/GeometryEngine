@@ -1,4 +1,5 @@
 using GeometryEngine.Internal;
+using GeometryEngine.Transforms;
 
 namespace GeometryEngine.Booleans;
 
@@ -31,13 +32,20 @@ internal sealed class EvaluateHandler(IBooleans pairwise)
             return Result.Failure<IMesh>(operands.Error);
         }
 
+        var order = SolidWalk.PostOrder(query);
+        var transforms = BooleanOperands.ValidateTransforms(order);
+        if (transforms.IsFailure)
+        {
+            return Result.Failure<IMesh>(transforms.Error);
+        }
+
         if (query is Solid.Leaf only)
         {
             return Result.Success(only.Mesh);
         }
 
         var built = new Dictionary<Solid, IMesh>(ReferenceEqualityComparer.Instance);
-        foreach (var node in SolidWalk.PostOrder(query))
+        foreach (var node in order)
         {
             if (node is Solid.Leaf leaf)
             {
@@ -45,9 +53,18 @@ internal sealed class EvaluateHandler(IBooleans pairwise)
                 continue;
             }
 
-            if (node is Solid.Transformed)
+            if (node is Solid.Transformed placed)
             {
-                return Result.Failure<IMesh>(new Error("Booleans.NotYet", "A moved part cannot be evaluated yet."));
+                // Nothing moved is still nothing; the transform slices refuse an empty mesh.
+                var source = built[placed.Source];
+                var moved = source.IsEmpty ? Result.Success(source) : Move(placed.Transform, source);
+                if (moved.IsFailure)
+                {
+                    return moved;
+                }
+
+                built.Add(node, moved.Value);
+                continue;
             }
 
             var step = (Solid.Combined)node;
@@ -62,6 +79,15 @@ internal sealed class EvaluateHandler(IBooleans pairwise)
 
         return Result.Success(built[query].WithMetadata(BooleanOperands.DescribeQuery(query, leaves)));
     }
+
+    private static Result<IMesh> Move(SolidTransform transform, IMesh mesh) =>
+        transform switch
+        {
+            SolidTransform.Translation shift => new TranslateHandler().Handle(new TranslateRequest(mesh, shift.Offset)),
+            SolidTransform.Scaling scale => new ScaleHandler().Handle(new ScaleRequest(mesh, scale.Factors)),
+            SolidTransform.Turn turn => VertexMap.Apply(mesh, turn.Rotation.Apply, "Rotate", turn.Rotation.Apply),
+            _ => Result.Failure<IMesh>(BooleanErrors.UnknownTransform(transform)),
+        };
 
     private Result<IMesh> Combine(BooleanOp op, IMesh left, IMesh right) =>
         (op, left.IsEmpty, right.IsEmpty) switch
