@@ -223,6 +223,34 @@ public sealed class RetainedSolidTests
         Check.Equal(0, Keeping(Solid.Of(body).Subtract(tools[0])).MeshesImported);
     }
 
+    [Fact]
+    public void Threads_meeting_a_mesh_at_the_same_moment_read_it_in_once_between_them()
+    {
+        // Large enough that reading it in outlasts a time slice, so the threads really do overlap.
+        var body = Fixtures.Sphere(Vec3.Zero, 10, 192);
+        var tools = Enumerable.Range(0, 8)
+            .Select(i => Fixtures.Sphere(new Vec3(9 * Math.Cos(i), 9 * Math.Sin(i), 0), 2, 16))
+            .ToArray();
+
+        var readIn = new int[tools.Length];
+        using var start = new Barrier(tools.Length);
+        var threads = Enumerable.Range(0, tools.Length)
+            .Select(t => new Thread(() =>
+            {
+                start.SignalAndWait();
+                readIn[t] = Keeping(Solid.Of(body).Subtract(tools[t])).MeshesImported;
+            }))
+            .ToList();
+
+        threads.ForEach(thread => thread.Start());
+        threads.ForEach(thread => Check.True(thread.Join(TimeSpan.FromSeconds(60))));
+
+        // Each thread reads in its own tool. The body is read in by whichever gets there first;
+        // the others wait for that rather than each reading it in as well, which would cost
+        // eight times the work and hold eight copies of it while they did.
+        Check.Equal(tools.Length + 1, readIn.Sum());
+    }
+
     /// <summary>
     /// Builds meshes, uses them, and returns with nothing left referring to them. Kept out of
     /// line so no local of the caller's can hold one alive past the call.

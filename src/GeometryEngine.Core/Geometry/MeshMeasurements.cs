@@ -58,6 +58,13 @@ internal sealed class MeshMeasurements
     public object? NativeSolid => Volatile.Read(ref _nativeSolid);
 
     /// <summary>
+    /// Held by a kernel while it reads this geometry in to keep, so that threads meeting a mesh
+    /// at the same moment wait for the one reading rather than each do the same work. As with
+    /// the index, building costs far more than waiting for another thread to finish.
+    /// </summary>
+    public object NativeSolidGate { get; } = new();
+
+    /// <summary>
     /// Keeps <paramref name="candidate"/> unless something is kept already, and returns whichever
     /// is kept. Two threads reading the same mesh in at once both offer one; the first is kept and
     /// the second gets the first back, to release its own.

@@ -720,22 +720,40 @@ internal static unsafe class ManifoldKernel
             return Result.Success(new Operand(kept.Copy(), kept.Merged, ReadIn: false));
         }
 
-        var operand = ToManifold(mesh);
-        if (operand.IsFailure || retention == SolidRetention.None)
+        if (retention == SolidRetention.None || mesh is not ImmutableMesh keeper)
         {
-            return operand;
+            return ToManifold(mesh);
         }
 
-        try
+        // One thread reads a mesh in; any other that wants it meanwhile waits here and takes a
+        // copy of what the first kept. Reading in is the dearest thing done to a mesh, and doing
+        // it once per waiting thread would also hold that many copies while they ran. Only this
+        // one gate is ever held, and nothing inside it waits on another, so it cannot deadlock;
+        // a thread waits no longer than reading the mesh in itself would have taken.
+        lock (keeper.Measurements.NativeSolidGate)
         {
-            Keep(mesh, operand.Value.Handle, operand.Value.Merged);
-            return operand;
-        }
-        catch
-        {
-            // The handle has no owner yet: the caller only takes it from a success.
-            ManifoldNative.manifold_delete_manifold(operand.Value.Handle);
-            throw;
+            if (keeper.Measurements.NativeSolid is RetainedSolid arrived)
+            {
+                return Result.Success(new Operand(arrived.Copy(), arrived.Merged, ReadIn: false));
+            }
+
+            var operand = ToManifold(mesh);
+            if (operand.IsFailure)
+            {
+                return operand;
+            }
+
+            try
+            {
+                Keep(mesh, operand.Value.Handle, operand.Value.Merged);
+                return operand;
+            }
+            catch
+            {
+                // The handle has no owner yet: the caller only takes it from a success.
+                ManifoldNative.manifold_delete_manifold(operand.Value.Handle);
+                throw;
+            }
         }
     }
 
