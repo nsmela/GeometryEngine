@@ -58,7 +58,7 @@ internal sealed class BooleanOperations(IToleranceStrategy tolerance) : IBoolean
             : Result.Success(subtracted.Value.WithMetadata(BooleanOperands.DescribeBatch([mesh, .. tools], "Subtract")));
     }
 
-    public Result<IMesh> Evaluate(Solid query) => Result.Failure<IMesh>(BooleanErrors.NotImplemented);
+    public Result<IMesh> Evaluate(Solid query) => new EvaluateHandler(this).Handle(new EvaluateRequest(query));
 
     public Result<MeshSplit> Split(IMesh mesh, Plane plane)
     {

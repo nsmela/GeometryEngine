@@ -1,5 +1,6 @@
 using BasicResults;
 using GeometryEngine.Core.Geometry;
+using GeometryEngine.Internal;
 using GeometryEngine.Internal.Native;
 
 namespace GeometryEngine.Booleans;
@@ -66,7 +67,39 @@ internal sealed class ManifoldBooleanOperations(IBooleans? fallback = null) : IB
             : RunBatch(operands, "Subtract", ManifoldOpType.Subtract, f => f.Subtract(mesh, tools));
     }
 
-    public Result<IMesh> Evaluate(Solid query) => Result.Failure<IMesh>(BooleanErrors.NotImplemented);
+    public Result<IMesh> Evaluate(Solid query)
+    {
+        ArgumentNullException.ThrowIfNull(query);
+
+        var leaves = SolidWalk.Leaves(query);
+        var operands = BooleanOperands.Validate(leaves);
+        if (operands.IsFailure)
+        {
+            return Result.Failure<IMesh>(operands.Error);
+        }
+
+        if (query is Solid.Leaf only)
+        {
+            return Result.Success(only.Mesh);
+        }
+
+        var result = ManifoldKernel.Evaluate(query, BooleanOperands.DescribeQuery(query, leaves));
+        if (result.IsSuccess)
+        {
+            return Result.Success(Produced(result.Value.Outcome));
+        }
+
+        if (_fallback is null || !ShouldFallBack(result.Error))
+        {
+            return Result.Failure<IMesh>(result.Error);
+        }
+
+        // The whole description goes to the managed kernel, not the step that failed: nothing
+        // half-built on the native side can be handed across, and a result that is part one
+        // kernel's and part the other's would carry neither one's guarantee.
+        var fallen = _fallback.Evaluate(query);
+        return fallen.IsFailure ? fallen : Result.Success(FellBack(fallen.Value));
+    }
 
     public Result<MeshSplit> Split(IMesh mesh, Plane plane)
     {

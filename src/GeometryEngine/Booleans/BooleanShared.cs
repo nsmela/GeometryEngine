@@ -10,7 +10,8 @@ internal static class BooleanErrors
     public static Error KernelFailure(string description) =>
         new("Booleans.KernelFailure", description);
 
-    public static readonly Error NotImplemented = new("Booleans.NotImplemented", "Not written yet.");
+    public static Error UnknownOperation(BooleanOp op) =>
+        new("Booleans.UnknownOperation", $"'{op}' is not a boolean operation.");
 }
 
 /// <summary>
@@ -72,6 +73,33 @@ internal static class BooleanOperands
             {
                 Annotations = meshes[0].Metadata.Annotations?.Carry(MeshOperation.Combine),
             };
+
+    /// <summary>
+    /// <see cref="DescribeResult"/> for a description. One step between two meshes is named
+    /// exactly as the pairwise call names it, so which way a caller asked cannot be read off the
+    /// result. Anything longer would run to a sentence, so it is named for its subject - the mesh
+    /// the description starts from - and a count of the others.
+    /// </summary>
+    public static MeshMetadata DescribeQuery(Solid query, IReadOnlyList<IMesh> leaves)
+    {
+        if (query is Solid.Combined { Left: Solid.Leaf left, Right: Solid.Leaf right } step)
+        {
+            return DescribeResult(left.Mesh, right.Mesh, step.Op.ToString());
+        }
+
+        var others = leaves.Count - 1;
+        var company = others switch
+        {
+            0 => "itself",
+            1 => "1 mesh",
+            _ => $"{others} meshes",
+        };
+
+        return new MeshMetadata($"{leaves[0].Metadata.Name} combined with {company}", "GeometryEngine.Booleans")
+        {
+            Annotations = leaves[0].Metadata.Annotations?.Carry(MeshOperation.Combine),
+        };
+    }
 
     /// <summary>One half of a split: still the subject's geometry, rebuilt along the cut.</summary>
     public static MeshMetadata DescribeHalf(IMesh mesh, string side) =>

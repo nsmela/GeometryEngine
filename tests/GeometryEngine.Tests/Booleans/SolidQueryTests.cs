@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using GeometryEngine.Booleans;
+using GeometryEngine.Internal;
 using GeometryEngine.Internal.Native;
 
 namespace GeometryEngine.Tests.Booleans;

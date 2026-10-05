@@ -193,8 +193,98 @@ internal static unsafe class ManifoldKernel
             }
         });
 
+    /// <summary>
+    /// Evaluates a description in one native pass. Each distinct mesh is read into the kernel
+    /// once; each step is composed from handles already there; and only the root is written back
+    /// out. Manifold's booleans are lazy - composing one records it and computes nothing - so the
+    /// work happens once, when the root is read, with the whole description in view.
+    ///
+    /// Every handle made here is owned by the one <c>finally</c> from the moment it exists and
+    /// freed before this returns, whichever way it returns. Nothing native outlives the call, so
+    /// there is no lifetime for a caller, a finalizer or another thread to get wrong.
+    /// </summary>
+    /// <remarks>
+    /// The status is read at the root alone. Reading it at a step would force that step to be
+    /// computed on its own, which is exactly the round trip this exists to avoid, and would keep
+    /// the kernel from reordering a run of like operations. The price is that an operation which
+    /// fails is reported for the description, not for a step; a mesh the kernel will not take is
+    /// still named, since that is known when it is read in.
+    /// </remarks>
     public static Result<ManifoldEvaluation> Evaluate(Solid query, MeshMetadata metadata) =>
-        Result.Failure<ManifoldEvaluation>(new Error("Booleans.NotImplemented", "Not written yet."));
+        Guarded(() =>
+        {
+            var owned = new List<IntPtr>();
+            var imported = new Dictionary<object, IntPtr>(ReferenceEqualityComparer.Instance);
+            var built = new Dictionary<Solid, IntPtr>(ReferenceEqualityComparer.Instance);
+            var merged = false;
+
+            try
+            {
+                foreach (var node in SolidWalk.PostOrder(query))
+                {
+                    if (node is Solid.Leaf leaf)
+                    {
+                        var geometry = SolidWalk.GeometryOf(leaf.Mesh);
+                        if (!imported.TryGetValue(geometry, out var known))
+                        {
+                            var operand = ToManifold(leaf.Mesh);
+                            if (operand.IsFailure)
+                            {
+                                return Result.Failure<ManifoldEvaluation>(operand.Error);
+                            }
+
+                            known = operand.Value.Handle;
+                            owned.Add(known);
+                            imported.Add(geometry, known);
+                            merged |= operand.Value.Merged;
+                        }
+
+                        built.Add(node, known);
+                        continue;
+                    }
+
+                    var step = (Solid.Combined)node;
+                    var combined = Combine(step.Op, built[step.Left], built[step.Right]);
+                    if (combined == IntPtr.Zero)
+                    {
+                        return Result.Failure<ManifoldEvaluation>(ManifoldErrors.UnknownOperation(step.Op));
+                    }
+
+                    owned.Add(combined);
+                    built.Add(node, combined);
+                }
+
+                var root = built[query];
+                var status = ManifoldNative.manifold_status(root);
+                if (status != ManifoldError.NoError)
+                {
+                    return Result.Failure<ManifoldEvaluation>(ManifoldErrors.OperationFailed(status));
+                }
+
+                var mesh = FromManifold(root, metadata);
+                return mesh.IsFailure
+                    ? Result.Failure<ManifoldEvaluation>(mesh.Error)
+                    : Result.Success(new ManifoldEvaluation(
+                        new ManifoldOutcome(mesh.Value, Provenance(merged)), imported.Count));
+            }
+            finally
+            {
+                foreach (var handle in owned)
+                {
+                    ManifoldNative.manifold_delete_manifold(handle);
+                }
+            }
+        });
+
+    /// <summary>One lazy native boolean, or zero for an operation that is not one.</summary>
+    private static IntPtr Combine(BooleanOp op, IntPtr left, IntPtr right) =>
+        op switch
+        {
+            BooleanOp.Union => ManifoldNative.manifold_union(ManifoldNative.manifold_alloc_manifold(), left, right),
+            BooleanOp.Subtract => ManifoldNative.manifold_difference(ManifoldNative.manifold_alloc_manifold(), left, right),
+            BooleanOp.Intersect => ManifoldNative.manifold_intersection(ManifoldNative.manifold_alloc_manifold(), left, right),
+            _ => IntPtr.Zero,
+        };
 
     private static ManifoldProvenance Provenance(bool merged) =>
         merged ? ManifoldProvenance.NativeAfterMergingOperands : ManifoldProvenance.Native;
@@ -856,6 +946,10 @@ internal static class ManifoldErrors
     public static Error OperationFailed(ManifoldError status) => new(
         "Manifold.OperationFailed",
         $"Boolean operation failed with status: {status}");
+
+    public static Error UnknownOperation(BooleanOp op) => new(
+        "Booleans.UnknownOperation",
+        $"'{op}' is not a boolean operation.");
 
     public static readonly Error EmptyResult =
         new("Manifold.EmptyResult", "The operation produced an empty solid.");
