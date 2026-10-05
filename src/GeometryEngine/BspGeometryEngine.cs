@@ -67,9 +67,17 @@ public sealed class BspGeometryEngine : IGeometryEngine
     /// managed BSP engine when an input mesh is not a valid 2-manifold (e.g. open surface
     /// with boundaries), or when the native library is not available for this platform.
     /// </summary>
-    public static IGeometryEngine CreateWithManifold() =>
+    public static IGeometryEngine CreateWithManifold() => CreateWithManifold(SolidRetention.Keep);
+
+    /// <summary>
+    /// <see cref="CreateWithManifold()"/>, saying whether the native kernel keeps the solids it
+    /// reads in and builds. Keeping them is the default and roughly halves the cost of using a
+    /// mesh again; <see cref="SolidRetention.None"/> trades that for the native memory they hold.
+    /// </summary>
+    public static IGeometryEngine CreateWithManifold(SolidRetention retention) =>
         new BspGeometryEngine(
-            new ManifoldBooleanOperations(new BooleanOperations(new AdaptiveTolerance(AdaptiveTolerance.DefaultFactor))),
+            new ManifoldBooleanOperations(
+                new BooleanOperations(new AdaptiveTolerance(AdaptiveTolerance.DefaultFactor)), retention),
             Tolerance.Welding);
 
     /// <summary>

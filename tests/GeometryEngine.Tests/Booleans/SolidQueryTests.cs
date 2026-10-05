@@ -195,7 +195,9 @@ public sealed class SolidEvaluationTests
         var renamed = Cavity.WithMetadata(MeshMetadata.Named("the cavity again"));
         var query = Solid.Of(Body).Subtract(Cavity).Union(Block).Subtract(renamed).Intersect(Body);
 
-        var evaluation = ManifoldKernel.Evaluate(query, MeshMetadata.Named("probe")).Value;
+        // Asked to keep nothing, so the count is of this call alone whatever ran before it.
+
+        var evaluation = ManifoldKernel.Evaluate(query, MeshMetadata.Named("probe"), SolidRetention.None).Value;
 
         // Five leaves, three meshes: the body twice, and the cavity under two names.
         Check.Equal(3, evaluation.MeshesImported);

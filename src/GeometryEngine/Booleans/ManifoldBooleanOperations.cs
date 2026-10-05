@@ -16,7 +16,7 @@ namespace GeometryEngine.Booleans;
 /// operands were welded on the way in, in <see cref="MeshMetadata.CreatedBy"/> - a caller
 /// sending geometry to a printer can tell a guaranteed result from a best-effort one.
 /// </summary>
-internal sealed class ManifoldBooleanOperations(IBooleans? fallback = null) : IBooleans
+internal sealed class ManifoldBooleanOperations(IBooleans? fallback = null, SolidRetention retention = SolidRetention.None) : IBooleans
 {
     /// <summary>Recorded on results the native kernel produced from valid 2-manifold operands.</summary>
     public const string NativeProducer = "GeometryEngine.Booleans.Manifold";
@@ -28,6 +28,7 @@ internal sealed class ManifoldBooleanOperations(IBooleans? fallback = null) : IB
     public const string FallbackProducer = "GeometryEngine.Booleans.Bsp (Manifold declined)";
 
     private readonly IBooleans? _fallback = fallback;
+    private readonly SolidRetention _retention = retention;
 
     // A pairwise call is a description one step long, so there is one way into the kernel and
     // one place that decides when to fall back.
@@ -82,7 +83,7 @@ internal sealed class ManifoldBooleanOperations(IBooleans? fallback = null) : IB
             return Result.Success(only.Mesh);
         }
 
-        var result = ManifoldKernel.Evaluate(query, BooleanOperands.DescribeQuery(query, leaves));
+        var result = ManifoldKernel.Evaluate(query, BooleanOperands.DescribeQuery(query, leaves), _retention);
         if (result.IsSuccess)
         {
             return Result.Success(Produced(result.Value.Outcome));
@@ -111,7 +112,7 @@ internal sealed class ManifoldBooleanOperations(IBooleans? fallback = null) : IB
         }
 
         var result = ManifoldKernel.Split(
-            mesh, plane, BooleanOperands.DescribeHalf(mesh, "front"), BooleanOperands.DescribeHalf(mesh, "back"));
+            mesh, plane, BooleanOperands.DescribeHalf(mesh, "front"), BooleanOperands.DescribeHalf(mesh, "back"), _retention);
 
         if (result.IsSuccess)
         {
@@ -135,7 +136,7 @@ internal sealed class ManifoldBooleanOperations(IBooleans? fallback = null) : IB
         ManifoldOpType op,
         Func<IBooleans, Result<IMesh>> fallback)
     {
-        var result = ManifoldKernel.Batch(operands, op, BooleanOperands.DescribeBatch(operands, operation));
+        var result = ManifoldKernel.Batch(operands, op, BooleanOperands.DescribeBatch(operands, operation), _retention);
         if (result.IsSuccess)
         {
             return Result.Success(Produced(result.Value));

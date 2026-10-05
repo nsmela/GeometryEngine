@@ -62,7 +62,8 @@ internal static unsafe class ManifoldKernel
     /// Combines every mesh in one native operation. For a subtraction the first mesh is the
     /// subject and the rest are taken away from it.
     /// </summary>
-    public static Result<ManifoldOutcome> Batch(IReadOnlyList<IMesh> meshes, ManifoldOpType op, MeshMetadata metadata) =>
+    public static Result<ManifoldOutcome> Batch(
+        IReadOnlyList<IMesh> meshes, ManifoldOpType op, MeshMetadata metadata, SolidRetention retention = SolidRetention.None) =>
         Guarded(() =>
         {
             var operands = new List<IntPtr>(meshes.Count);
@@ -127,7 +128,11 @@ internal static unsafe class ManifoldKernel
     /// the side the normal points to.
     /// </summary>
     public static Result<(ManifoldOutcome Front, ManifoldOutcome Back)> Split(
-        IMesh mesh, Plane plane, MeshMetadata frontMetadata, MeshMetadata backMetadata) =>
+        IMesh mesh,
+        Plane plane,
+        MeshMetadata frontMetadata,
+        MeshMetadata backMetadata,
+        SolidRetention retention = SolidRetention.None) =>
         Guarded(() =>
         {
             if (mesh.IsEmpty)
@@ -215,7 +220,8 @@ internal static unsafe class ManifoldKernel
     /// that an operation which fails is reported for the description, not for a step; a mesh the
     /// kernel will not take is still named, since that is known when it is read in.
     /// </remarks>
-    public static Result<ManifoldEvaluation> Evaluate(Solid query, MeshMetadata metadata) =>
+    public static Result<ManifoldEvaluation> Evaluate(
+        Solid query, MeshMetadata metadata, SolidRetention retention = SolidRetention.None) =>
         Guarded(() =>
         {
             var order = SolidWalk.PostOrder(query);
