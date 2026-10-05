@@ -66,6 +66,8 @@ internal sealed class ManifoldBooleanOperations(IBooleans? fallback = null) : IB
             : RunBatch(operands, "Subtract", ManifoldOpType.Subtract, f => f.Subtract(mesh, tools));
     }
 
+    public Result<IMesh> Evaluate(Solid query) => Result.Failure<IMesh>(BooleanErrors.NotImplemented);
+
     public Result<MeshSplit> Split(IMesh mesh, Plane plane)
     {
         ArgumentNullException.ThrowIfNull(mesh);

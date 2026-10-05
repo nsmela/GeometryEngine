@@ -9,6 +9,8 @@ internal static class BooleanErrors
 
     public static Error KernelFailure(string description) =>
         new("Booleans.KernelFailure", description);
+
+    public static readonly Error NotImplemented = new("Booleans.NotImplemented", "Not written yet.");
 }
 
 /// <summary>

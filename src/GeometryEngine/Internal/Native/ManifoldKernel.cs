@@ -24,6 +24,12 @@ internal enum ManifoldProvenance
 internal readonly record struct ManifoldOutcome(IMesh Mesh, ManifoldProvenance Provenance);
 
 /// <summary>
+/// The outcome of evaluating a <see cref="Solid"/>, with how many meshes had to be read into the
+/// kernel to do it - one per distinct mesh, which is the saving the description exists to make.
+/// </summary>
+internal readonly record struct ManifoldEvaluation(ManifoldOutcome Outcome, int MeshesImported);
+
+/// <summary>
 /// Executes Boolean operations through the native Manifold library.
 /// Handles marshaling to and from <see cref="IMesh"/> and ensures every native
 /// resource is deterministically freed, preventing native leaks.
@@ -186,6 +192,9 @@ internal static unsafe class ManifoldKernel
                 }
             }
         });
+
+    public static Result<ManifoldEvaluation> Evaluate(Solid query, MeshMetadata metadata) =>
+        Result.Failure<ManifoldEvaluation>(new Error("Booleans.NotImplemented", "Not written yet."));
 
     private static ManifoldProvenance Provenance(bool merged) =>
         merged ? ManifoldProvenance.NativeAfterMergingOperands : ManifoldProvenance.Native;

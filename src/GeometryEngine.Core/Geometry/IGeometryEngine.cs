@@ -71,6 +71,19 @@ public interface IBooleans
     /// wholly on one side comes back whole on that side, with an empty mesh on the other.
     /// </summary>
     Result<MeshSplit> Split(IMesh mesh, Plane plane);
+
+    /// <summary>
+    /// Builds the solid a description stands for, in one pass: each mesh in it is read by the
+    /// kernel once, however often the description uses it, and only the final solid is written
+    /// back out. Cheaper than the same steps taken one call at a time, each of which hands its
+    /// result back as a mesh for the next to read in again.
+    ///
+    /// Every mesh in the description must have geometry. A description that is a single mesh
+    /// comes back as that mesh; one that describes nothing - a solid less itself - comes back as
+    /// an empty mesh. A failure names the mesh the kernel would not take, where one is to blame,
+    /// and otherwise speaks for the description as a whole rather than for one step of it.
+    /// </summary>
+    Result<IMesh> Evaluate(Solid query);
 }
 
 /// <summary>
