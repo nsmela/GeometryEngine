@@ -60,6 +60,13 @@ internal sealed class BooleanOperations(IToleranceStrategy tolerance) : IBoolean
 
     public Result<IMesh> Evaluate(Solid query) => new EvaluateHandler(this).Handle(new EvaluateRequest(query));
 
+    /// <summary>The managed kernel keeps nothing between calls, so there is nothing to read ahead.</summary>
+    public Result Prepare(IMesh mesh)
+    {
+        ArgumentNullException.ThrowIfNull(mesh);
+        return mesh.IsEmpty ? Result.Failure(BooleanErrors.EmptyOperand) : Result.Success();
+    }
+
     public Result<MeshSplit> Split(IMesh mesh, Plane plane)
     {
         ArgumentNullException.ThrowIfNull(mesh);

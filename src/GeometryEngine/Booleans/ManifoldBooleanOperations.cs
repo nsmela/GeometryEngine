@@ -101,6 +101,12 @@ internal sealed class ManifoldBooleanOperations(IBooleans? fallback = null, Soli
         return fallen.IsFailure ? fallen : Result.Success(FellBack(fallen.Value));
     }
 
+    public Result Prepare(IMesh mesh)
+    {
+        ArgumentNullException.ThrowIfNull(mesh);
+        return mesh.IsEmpty ? Result.Failure(BooleanErrors.EmptyOperand) : Result.Success();
+    }
+
     public Result<MeshSplit> Split(IMesh mesh, Plane plane)
     {
         ArgumentNullException.ThrowIfNull(mesh);

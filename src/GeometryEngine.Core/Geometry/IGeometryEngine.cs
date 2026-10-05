@@ -84,6 +84,23 @@ public interface IBooleans
     /// and otherwise speaks for the description as a whole rather than for one step of it.
     /// </summary>
     Result<IMesh> Evaluate(Solid query);
+
+    /// <summary>
+    /// Reads a mesh into the kernel ahead of its first use, where the kernel keeps what it reads:
+    /// the first operation on the mesh then costs what every later one does. Reading a mesh in
+    /// is about half of a boolean on it, and this is the way to pay that somewhere it will not
+    /// be noticed - as a file loads, or on another thread while the user looks at the mesh.
+    ///
+    /// It is a hint, and safe to give for any mesh at any time, from any thread. An engine that
+    /// keeps nothing has nothing to prepare and answers success. A mesh already read in is not
+    /// read again.
+    ///
+    /// A failure is news about the mesh, not about the call: it has no geometry, or the native
+    /// kernel will not take it as a solid - an open surface, say. Operations on such a mesh are
+    /// still answered where there is a managed kernel to fall back to, without the native
+    /// kernel's guarantee of a watertight result, and this is the earliest that can be known.
+    /// </summary>
+    Result Prepare(IMesh mesh);
 }
 
 /// <summary>
