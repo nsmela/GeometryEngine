@@ -2,7 +2,7 @@
 
 A 3D mesh geometry library in C#, built to replace the MeshLib backend of
 [nsmela/Fabolus](https://github.com/nsmela/Fabolus): booleans, offsets, decimation and repair,
-spatial queries, planar polygons, decals, and mesh files. `net8.0`.
+spatial queries, planar polygons, decals, and mesh files. `net10.0`.
 
 Booleans run on the native [Manifold](https://github.com/elalish/manifold) kernel, with the
 managed BSP kernel described below as the fallback. Offsets and batched distance queries run on a
