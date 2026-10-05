@@ -52,6 +52,26 @@ internal static class RetainSoak
         void Drag(IGeometryEngine subject) =>
             _ = subject.Booleans.Evaluate(Solid.Of(held).Translate(new Vec3(++step * 0.01, 0, 0)).Subtract(tool)).Value;
 
+        // An undo stack ten deep: each round's preview is kept to go back to, and the oldest
+        // dropped. Kept as they are, ten solids stand behind the ten meshes; released as each
+        // leaves the screen, one does.
+        var stack = new Queue<IMesh>();
+        void Push(IGeometryEngine subject, bool release)
+        {
+            var preview = subject.Booleans.Evaluate(
+                Solid.Of(held).Translate(new Vec3(++step * 0.01, 0, 0)).Subtract(tool)).Value;
+            if (release && stack.Count > 0)
+            {
+                subject.Booleans.Release(stack.Last());
+            }
+
+            stack.Enqueue(preview);
+            if (stack.Count > 10)
+            {
+                stack.Dequeue();
+            }
+        }
+
         var runs = new (int Rounds, IGeometryEngine Subject, string Label, Action<IGeometryEngine> Round)[]
         {
             (40, reading, "new meshes each round, nothing kept", subject => Round(subject, bolus, tool)),
@@ -59,6 +79,8 @@ internal static class RetainSoak
             (120, engine, "new meshes each round, kept", subject => Round(subject, bolus, tool)),
             (40, engine, "one kept body dragged and cut", Drag),
             (120, engine, "one kept body dragged and cut", Drag),
+            (40, engine, "ten previews in an undo stack, each keeping its solid", subject => Push(subject, release: false)),
+            (40, engine, "ten previews in an undo stack, released as they leave the screen", subject => Push(subject, release: true)),
         };
 
         Drag(engine);
@@ -83,6 +105,7 @@ internal static class RetainSoak
                 peakPrivate = Math.Max(peakPrivate, process.PrivateMemorySize64 - privateFloor);
             }
 
+            stack.Clear();
             var gen2 = GC.CollectionCount(2) - gen2Before;
             var (managedAfter, privateAfter) = Settled();
             times.Sort();

@@ -11,7 +11,7 @@ namespace GeometryEngine.Benchmarks;
 /// Times the same work on an engine that keeps native solids with their meshes and on one that
 /// does not.
 ///
-/// Five shapes of work. A single description cannot cover the first two, because the caller
+/// Six shapes of work. A single description cannot cover the first two, because the caller
 /// wants each result in hand before deciding the next step; the last two are how an interactive
 /// caller meets a mesh for the first time and comes back to a description:
 ///
@@ -23,6 +23,9 @@ namespace GeometryEngine.Benchmarks;
 ///                          IBooleans.Prepare has read the mesh in ahead of it.
 ///   a body moved, then cut a body the kernel holds, shifted and cut: by moving the mesh first, and
 ///                          by moving it inside the description.
+///   a mould with a preview the block less the bolus evaluated to be looked at, then the channels
+///                          cut: with the rest built on the preview, and with the whole mould
+///                          described again from the start.
 ///   a description, redone  the same mould as one description, evaluated a second time with one
 ///                          channel replaced. Keeping reads in only the channel that changed.
 ///
@@ -136,6 +139,42 @@ internal static class RetainCompare
                     _ = engine.Booleans.Prepare(body);
                     _ = engine.Booleans.Prepare(tool);
                     return () => engine.Booleans.Evaluate(Solid.Of(body).Translate(nudge).Subtract(tool)).Value;
+                });
+            }
+
+            // A mould shown half way: the block less the bolus is looked at, then the channels are
+            // cut. The preview is a description of its own, and what matters is how the rest is
+            // then asked for - built on the preview, or described again from the start.
+            Solid Cavity(IMesh start, IMesh[] tools) => Solid.Of(start).Subtract(tools[0]);
+            Solid Channels(Solid from, IMesh[] tools) => tools.Skip(1).Aggregate(from, (solid, tool) => solid.Subtract(tool));
+
+            Report(reading, "a mould with a preview / no preview, one description", () =>
+            {
+                var (start, tools) = (Unseen(reading, block), channels.Prepend(bolus).Select(tool => Unseen(reading, tool)).ToArray());
+                return () => reading.Booleans.Evaluate(Channels(Cavity(start, tools), tools)).Value;
+            });
+
+            foreach (var (label, engine) in new[] { ("read in each time", reading), ("kept", keeping) })
+            {
+                Report(engine, $"a mould with a preview / rest built on the preview, {label}", () =>
+                {
+                    var (start, tools) = (Unseen(engine, block), channels.Prepend(bolus).Select(tool => Unseen(engine, tool)).ToArray());
+                    return () =>
+                    {
+                        var preview = engine.Booleans.Evaluate(Cavity(start, tools)).Value;
+                        return engine.Booleans.Evaluate(Channels(Solid.Of(preview), tools)).Value;
+                    };
+                });
+
+                Report(engine, $"a mould with a preview / described again from the start, {label}", () =>
+                {
+                    var (start, tools) = (Unseen(engine, block), channels.Prepend(bolus).Select(tool => Unseen(engine, tool)).ToArray());
+                    return () =>
+                    {
+                        var preview = engine.Booleans.Evaluate(Cavity(start, tools)).Value;
+                        GC.KeepAlive(preview);
+                        return engine.Booleans.Evaluate(Channels(Cavity(start, tools), tools)).Value;
+                    };
                 });
             }
 

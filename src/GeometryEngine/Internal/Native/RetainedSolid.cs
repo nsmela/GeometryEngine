@@ -11,8 +11,9 @@ namespace GeometryEngine.Internal.Native;
 /// frees that copy as it frees every handle it owns. So nothing outside this class can free what
 /// is kept, and what is kept cannot be freed under an operation still using it.
 ///
-/// It lives exactly as long as its mesh: the mesh's measurements hold the only reference, and
-/// the finalizer releases the native memory once they are collected. That memory is invisible to
+/// It lives as long as its mesh unless released sooner: the mesh's measurements hold the only
+/// reference, and the finalizer releases the native memory once they are collected. A release
+/// asked for while an operation is taking a copy waits for that copy to be taken. That memory is invisible to
 /// the collector, which would otherwise see a few dozen bytes where there are megabytes, so its
 /// size is declared as pressure for as long as it is held.
 /// </summary>
@@ -52,14 +53,24 @@ internal sealed class RetainedSolid : SafeHandle
 
     public override bool IsInvalid => handle == IntPtr.Zero;
 
-    /// <summary>A handle to the same solid, owned by the caller and freed like any other.</summary>
-    public IntPtr Copy()
+    /// <summary>
+    /// A handle to the same solid, owned by the caller and freed like any other. False if this
+    /// was released between the caller finding it and asking: the mesh then has nothing kept,
+    /// and is read in as if it never had.
+    /// </summary>
+    public bool TryCopy(out IntPtr copy)
     {
         var held = false;
         try
         {
             DangerousAddRef(ref held);
-            return ManifoldNative.manifold_copy(ManifoldNative.manifold_alloc_manifold(), handle);
+            copy = ManifoldNative.manifold_copy(ManifoldNative.manifold_alloc_manifold(), handle);
+            return true;
+        }
+        catch (ObjectDisposedException)
+        {
+            copy = IntPtr.Zero;
+            return false;
         }
         finally
         {

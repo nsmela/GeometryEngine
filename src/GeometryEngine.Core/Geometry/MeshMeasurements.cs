@@ -72,6 +72,12 @@ internal sealed class MeshMeasurements
     public object KeepNativeSolid(object candidate) =>
         Interlocked.CompareExchange(ref _nativeSolid, candidate, null) ?? candidate;
 
+    /// <summary>
+    /// Takes what is kept, leaving nothing, and returns it for the caller to release. Taken
+    /// before it is released, never after, so nothing reads a solid here that is already gone.
+    /// </summary>
+    public object? TakeNativeSolid() => Interlocked.Exchange(ref _nativeSolid, null);
+
     public MeshStatistics? Statistics
     {
         get => Volatile.Read(ref _statistics);

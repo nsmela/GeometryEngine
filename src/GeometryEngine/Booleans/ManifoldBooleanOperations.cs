@@ -112,7 +112,10 @@ internal sealed class ManifoldBooleanOperations(IBooleans? fallback = null, Soli
     public bool Release(IMesh mesh)
     {
         ArgumentNullException.ThrowIfNull(mesh);
-        return false;
+
+        // An engine that keeps nothing kept nothing of this mesh, and leaves alone whatever
+        // another engine may have.
+        return _retention == SolidRetention.Keep && ManifoldKernel.LetGo(mesh);
     }
 
     public Result Prepare(IMesh mesh)

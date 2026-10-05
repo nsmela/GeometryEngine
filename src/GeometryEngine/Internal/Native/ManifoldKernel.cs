@@ -348,6 +348,23 @@ internal static unsafe class ManifoldKernel
             return Result.Success(operand.Value.ReadIn);
         });
 
+    /// <summary>
+    /// Releases what is kept with a mesh, now. The mesh's measurements are emptied first, so no
+    /// later request finds a solid that is going; a request that found it a moment earlier either
+    /// takes its copy before the release lands or is told it is gone and reads the mesh in.
+    /// </summary>
+    /// <returns>Whether anything was kept.</returns>
+    public static bool LetGo(IMesh mesh)
+    {
+        if (mesh is not ImmutableMesh immutable || immutable.Measurements.TakeNativeSolid() is not RetainedSolid kept)
+        {
+            return false;
+        }
+
+        kept.Dispose();
+        return true;
+    }
+
     /// <summary>A solid under one transform, or zero for a transform that is not one of the three.</summary>
     private static IntPtr Move(SolidTransform transform, IntPtr solid)
     {
@@ -715,9 +732,10 @@ internal static unsafe class ManifoldKernel
     private static Result<Operand> Acquire(IMesh mesh, SolidRetention retention)
     {
         if (retention == SolidRetention.Keep
-            && mesh is ImmutableMesh { Measurements.NativeSolid: RetainedSolid kept })
+            && mesh is ImmutableMesh { Measurements.NativeSolid: RetainedSolid kept }
+            && kept.TryCopy(out var copy))
         {
-            return Result.Success(new Operand(kept.Copy(), kept.Merged, ReadIn: false));
+            return Result.Success(new Operand(copy, kept.Merged, ReadIn: false));
         }
 
         if (retention == SolidRetention.None || mesh is not ImmutableMesh keeper)
@@ -732,9 +750,9 @@ internal static unsafe class ManifoldKernel
         // a thread waits no longer than reading the mesh in itself would have taken.
         lock (keeper.Measurements.NativeSolidGate)
         {
-            if (keeper.Measurements.NativeSolid is RetainedSolid arrived)
+            if (keeper.Measurements.NativeSolid is RetainedSolid arrived && arrived.TryCopy(out var theirs))
             {
-                return Result.Success(new Operand(arrived.Copy(), arrived.Merged, ReadIn: false));
+                return Result.Success(new Operand(theirs, arrived.Merged, ReadIn: false));
             }
 
             var operand = ToManifold(mesh);
