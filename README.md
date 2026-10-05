@@ -10,6 +10,15 @@ small libigl-backed native library (`native/`), with a managed BVH as the fallba
 binaries ship for win-x64; elsewhere everything still works on the managed paths. Planar work uses
 Clipper2 and NetTopologySuite. See `THIRD-PARTY-NOTICES.md`.
 
+A chain of booleans can be described as a value and evaluated in one native pass, so each mesh is
+read by the kernel once and only the final solid is written out:
+
+```csharp
+var mould = engine.Booleans.Evaluate(Solid.Of(block).Subtract(bolus).Union(lug).Intersect(envelope));
+```
+
+See [`docs/boolean-query.md`](docs/boolean-query.md) for the design and measurements.
+
 **192 tests, all green.** Fabolus's own suite (238 tests) passes against it through the thin
 adapter in `Fabolus.Core/Geometry/Engine`.
 

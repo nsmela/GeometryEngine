@@ -19,6 +19,7 @@ return (args.Length > 0 ? args[0] : "bench").ToLowerInvariant() switch
     "offset" => OffsetProfile.Run(),
     "decimate" => DecimateCompare.Run(),
     "batch" => BatchCompare.Run(),
+    "query" => QueryCompare.Run(),
     "smoothfigures" => SmoothingFigures.Run(args.Length > 1 ? args[1] : "out"),
     _ => RunBenchmarks(args),
 };

@@ -59,6 +59,18 @@ doubled face or two sheets meeting along an edge — the native kernel accepts t
 cleans them), and `HOLE` is genuinely torn, which the native kernel rejects. Only `HOLE`
 makes a mesh unprintable.
 
+### Compare a description with the same steps taken a call at a time
+
+```
+dotnet run -c Release -- query
+```
+
+Builds a mould with every kind of step in it - a block less the bolus and eight air channels,
+joined to four lugs, clipped to a build volume - three ways: one call per step, the batch calls
+chained, and one `Solid` description handed to `IBooleans.Evaluate`. Prints the median time,
+triangle count, volume and producing kernel for each, so a faster line that built a different
+solid cannot pass unnoticed. See `docs/boolean-query.md`.
+
 ### Probe for memory leaks
 
 ```
