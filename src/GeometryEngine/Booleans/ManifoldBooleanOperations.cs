@@ -104,7 +104,30 @@ internal sealed class ManifoldBooleanOperations(IBooleans? fallback = null, Soli
     public Result Prepare(IMesh mesh)
     {
         ArgumentNullException.ThrowIfNull(mesh);
-        return mesh.IsEmpty ? Result.Failure(BooleanErrors.EmptyOperand) : Result.Success();
+
+        if (mesh.IsEmpty)
+        {
+            return Result.Failure(BooleanErrors.EmptyOperand);
+        }
+
+        if (_retention == SolidRetention.None)
+        {
+            return Result.Success();
+        }
+
+        var prepared = ManifoldKernel.Prepare(mesh);
+        if (prepared.IsSuccess)
+        {
+            return Result.Success();
+        }
+
+        // With no native library every operation is the managed kernel's, and it reads each
+        // mesh as it meets it: there is nothing to do ahead, which is not a fault in the mesh.
+        // Any other failure is said as it is - unlike an operation, a hint has no answer to
+        // fall back to, and that the native kernel declined this mesh is the thing worth knowing.
+        return prepared.Error.Code == "Manifold.Unavailable" && _fallback is not null
+            ? Result.Success()
+            : Result.Failure(prepared.Error);
     }
 
     public Result<MeshSplit> Split(IMesh mesh, Plane plane)

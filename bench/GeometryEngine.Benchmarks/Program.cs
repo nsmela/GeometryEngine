@@ -21,6 +21,7 @@ return (args.Length > 0 ? args[0] : "bench").ToLowerInvariant() switch
     "batch" => BatchCompare.Run(),
     "query" => QueryCompare.Run(),
     "retain" => RetainCompare.Run(),
+    "retainsoak" => RetainSoak.Run(),
     "smoothfigures" => SmoothingFigures.Run(args.Length > 1 ? args[1] : "out"),
     _ => RunBenchmarks(args),
 };

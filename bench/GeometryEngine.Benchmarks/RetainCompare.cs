@@ -11,14 +11,16 @@ namespace GeometryEngine.Benchmarks;
 /// Times the same work on an engine that keeps native solids with their meshes and on one that
 /// does not.
 ///
-/// Three shapes of work. A single description cannot cover the first two, because the caller
-/// wants each result in hand before deciding the next step; the third is a description used the
-/// way an interactive caller uses one:
+/// Four shapes of work. A single description cannot cover the first two, because the caller
+/// wants each result in hand before deciding the next step; the last two are how an interactive
+/// caller meets a mesh for the first time and comes back to a description:
 ///
 ///   one body, eight cuts   the same bolus cut by a different channel each time, as when a user
 ///                          moves a channel and looks again. Keeping reads the bolus in once.
 ///   a chain, step by step  a block less the bolus and eight channels, one call per step, each
 ///                          result fed to the next. Keeping never reads a result back in.
+///   the first cut          one cut of a mesh the kernel has not seen, and the same cut after
+///                          IBooleans.Prepare has read the mesh in ahead of it.
 ///   a description, redone  the same mould as one description, evaluated a second time with one
 ///                          channel replaced. Keeping reads in only the channel that changed.
 ///
@@ -85,6 +87,32 @@ internal static class RetainCompare
                     return () => tools.Aggregate(start, (current, tool) => engine.Booleans.Subtract(current, tool).Value);
                 });
             }
+
+            // The first cut of a mesh, as it is and with the mesh prepared beforehand - untimed,
+            // as it would be on another thread - and what preparing costs wherever it is paid.
+            Report(keeping, "the first cut         / as it comes", () =>
+            {
+                var (body, tool) = (Unseen(keeping, bolus), Unseen(keeping, channels[0]));
+                return () => keeping.Booleans.Subtract(body, tool).Value;
+            });
+
+            Report(keeping, "the first cut         / prepared", () =>
+            {
+                var (body, tool) = (Unseen(keeping, bolus), Unseen(keeping, channels[0]));
+                _ = keeping.Booleans.Prepare(body);
+                _ = keeping.Booleans.Prepare(tool);
+                return () => keeping.Booleans.Subtract(body, tool).Value;
+            });
+
+            Report(keeping, "preparing the body    / alone", () =>
+            {
+                var body = Unseen(keeping, bolus);
+                return () =>
+                {
+                    _ = keeping.Booleans.Prepare(body);
+                    return body;
+                };
+            });
 
             foreach (var (label, engine) in new[] { ("read in each time", reading), ("kept", keeping) })
             {

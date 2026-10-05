@@ -308,6 +308,29 @@ internal static unsafe class ManifoldKernel
             }
         });
 
+    /// <summary>
+    /// Reads a mesh in and keeps its solid with it, for an operation still to come. True where
+    /// that was done now; false where the mesh already had one and nothing was.
+    /// </summary>
+    public static Result<bool> Prepare(IMesh mesh) =>
+        Guarded(() =>
+        {
+            if (mesh is ImmutableMesh { Measurements.NativeSolid: RetainedSolid })
+            {
+                return Result.Success(false);
+            }
+
+            var operand = Acquire(mesh, SolidRetention.Keep);
+            if (operand.IsFailure)
+            {
+                return Result.Failure<bool>(operand.Error);
+            }
+
+            // What is kept is a reference of its own; this one was only ever the means.
+            ManifoldNative.manifold_delete_manifold(operand.Value.Handle);
+            return Result.Success(operand.Value.ReadIn);
+        });
+
     /// <summary>One lazy native boolean, or zero for an operation that is not one.</summary>
     private static IntPtr Combine(BooleanOp op, IntPtr left, IntPtr right) =>
         op switch
