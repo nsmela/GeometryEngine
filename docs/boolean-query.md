@@ -18,6 +18,10 @@ implements, what was measured, and what was deliberately left out.
   early, and a part of a description can be moved inside the kernel without being read in again.
 - The managed topology audit is five times faster (136 ms to 28 ms at 100k triangles) and a
   binary STL of that size reads about a third faster.
+- An offset-smooth samples its grid only near the surface: 2.6 times faster on a 100k-triangle
+  mesh on one core, for the same mesh bit for bit.
+- Run on the target workstation (6 cores, Windows, .NET 10): threading held over 124 runs, and
+  the speedups carried over at the same ratios.
 
 ```csharp
 var mould = engine.Booleans.Evaluate(
@@ -184,6 +188,61 @@ No solids were alive after any run, growth did not rise with run length, and the
 of the drag was 122.9 ms against a median of 89.2 ms. The declaration costs one more full
 collection a round with no change in round time.
 
+### 5. Where does an offset-smooth spend its time?
+
+An offset-smooth is a closing on a sampled distance grid: sample the mesh's signed distance at
+every grid node, inflate and deflate on the grid, mesh the zero level. It was the slowest
+operation measured, at seconds on one core.
+
+Sampling every node was 62 to 85% of it. Three ways of filling the grid were compared, with the
+rest of the pipeline run on each (one core, closing distance 1.5, milliseconds):
+
+| Mesh | Every node, managed | Every node, native field | Near the surface only |
+|---|---|---|---|
+| `small test`, 23.5k triangles | 1,954 | 2,416 | 454 |
+| `test_smoothed_bolus`, 100.6k | 2,390 | 1,983 | 279 |
+| `ear_bolus`, 2.8k | 650 | 743 | 163 |
+
+- **The native distance field was not the answer.** Per core it is no faster than the managed
+  BVH, and it changes the result slightly, because it takes its sign from a winding number.
+- **Most of the sampling is never read.** A closing reads an exact distance only within its
+  reach of the surface: the inflation plus a three-cell margin. Beyond that it needs a node's
+  side. About a third of the nodes are within reach.
+
+What was built:
+
+- `MeshBvh.TrySignedDistance(point, reach)`: the distance if the surface is within reach, and
+  nothing otherwise. The answer is bit-identical to the unbounded query; a far point is
+  dismissed at the first few boxes.
+- `SignedDistanceGrid.SampleNear`: measures nodes within reach and gives the rest the side of
+  the node before them in the row. The first out-of-reach node of a row is asked outright.
+- A rule for when this is sound: the mesh must be closed and consistently wound, decided by one
+  pass of the edge tally. Otherwise every node is measured as before.
+- The closing and the self-intersection count now use the mesh's shared index.
+
+The result is the same mesh, vertex for vertex and triangle for triangle, on every case tested.
+`bench smooth` on one core:
+
+| Mesh | Whole closing before | After | Sampling before | After |
+|---|---|---|---|---|
+| `small test`, 23.5k triangles | 2,360.8 ms | 1,322.1 ms | 1,400.0 ms | 358.6 ms |
+| `test_smoothed_bolus`, 100.6k | 2,103.7 ms | 807.1 ms | 1,787.4 ms | 328.4 ms |
+| `ear_bolus`, 2.8k | 825.1 ms | 836.4 ms | not sampled near the surface | |
+
+Meshing the level set (335 to 930 ms here, single-threaded) is now the largest phase.
+
+Two limits:
+
+- **Three of the fifteen clinical bench files do not qualify** (`ear_bolus`, `larynx small`,
+  `mould_test`). Each has one edge shared by more than two faces. They are closed as before, at
+  the old speed. The rule earns its place: sampled near the surface anyway, `larynx small` puts
+  one node of 259,740 on the wrong side.
+- **A closed mesh that passes through itself is not detected.** Finding that costs more than the
+  sampling saves. Such a mesh may close differently where its surfaces disagree about the inside.
+
+Sampling and the level set both use every core, so the saving on the workstation will be
+smaller in milliseconds than above. `bench smooth` prints the phases to show where it lands.
+
 ## What the branch implements
 
 | File | Change |
@@ -211,6 +270,12 @@ collection a round with no change in round time.
 | `tests/.../Booleans/PrepareTests.cs`, `SolidTransformTests.cs`, `PreviewTests.cs` | 28 tests |
 | `tests/.../Evaluators/TopologyTallyTests.cs`, `Csg/VertexWelderTests.cs` | 8 tests |
 | `bench/.../RetainSoak.cs` | `retainsoak` mode |
+| `Internal/Spatial/MeshBvh.cs` | `TrySignedDistance`: a distance only if the surface is within reach |
+| `Internal/Smoothing/SignedDistanceGrid.cs` | `SampleNear` |
+| `Modifiers/Modifiers.cs` | `OffsetSmoothHandler`: `GridFor`, `CanSampleNearSurface`, `GridSampling` |
+| `Internal/TopologyTallies.cs` | moved from `Evaluators/`, now that two slices use it |
+| `tests/.../Modifiers/OffsetSmoothSamplingTests.cs` | 8 tests |
+| `bench/.../WarmupProfile.cs`, `SmoothProfile.cs` | `warmup` and `smooth` modes |
 
 Behaviour:
 
@@ -310,27 +375,51 @@ description builds in 271 ms with nothing kept.
 - BenchmarkDotNet could not be restored here. The whole benchmark project, entry point included,
   compiles against stand-ins for the five BenchmarkDotNet types it uses, and every console mode
   named in this document was run that way. The BenchmarkDotNet suite itself was not run.
-- The test suite was run on the same Linux setup: 369 passed, 0 failed, native path included.
+- The test suite was run on the same Linux setup: 377 passed, 0 failed, native path included.
 - The audit and welder timings are old and new code interleaved in one warmed process. The
   sandbox was noisy between runs (the old audit measured 136 to 179 ms), so trust the ratios
   more than the figures.
-- **Thread safety is argued and tested, but only on one core.** Manifold guards a shared leaf
-  with a mutex (`CsgLeafNode::GetImpl`), and the test races eight threads through first use and
-  32 cuts of one kept mesh. On a single core that interleaves rather than runs in parallel, so
-  repeat it on the target machine before relying on it.
+- **Thread safety is argued and tested.** Manifold guards a shared leaf with a mutex
+  (`CsgLeafNode::GetImpl`). The one-core sandbox could only interleave threads; the workstation
+  run below is the evidence under real parallelism.
 - The 212 bytes per triangle is one measurement of heap growth on glibc, at two mesh sizes.
 
-### Still to be settled on the target machine
+### On the target workstation
 
-Everything above was measured on one core. Three questions need a multi-core Windows run:
+The branch at `82b7ec2` was run on a Ryzen 5 5600 (6 cores, 12 threads), Windows 10, .NET
+10.0.12, against the shipped multi-threaded Manifold binary. It settled the three questions
+the one-core sandbox could not.
 
-1. **Do the threading tests hold under real parallelism?** Run the test suite several times.
-2. **Do the timings carry over to the TBB build?** Run `query`, `retain` and `retainsoak`.
-3. **How wide is the gap between first calls and settled ones?** Run `warmup`, then again with
-   `DOTNET_TieredCompilation=0`. On one core here the first read of a 100k-triangle STL took
-   416 ms against 66 ms settled, and the first index build 301 ms against 53 ms; with tiering
-   off the first read took 106 ms. Several cores should narrow this, and by how much decides
-   whether publishing the caller with ReadyToRun is worth doing.
+**Threading holds.** Four full runs of the suite passed (369 tests each). The six tests that
+exercise real concurrency passed 120 of 120 isolated runs, with no crash or hang.
+
+**The speedups carry over.** Times are 2.5 to 2.9 times lower than on one core and the ratios
+held (100,612 triangles):
+
+| | Before | After | Ratio | One-core ratio |
+|---|---|---|---|---|
+| Mould: one call per step against one description | 954.9 ms | 172.0 ms | 5.55x | 5.89x |
+| One body, eight cuts: read in each time against kept | 542.4 ms | 293.8 ms | 1.85x | 1.81x |
+| A chain, step by step: read in each time against kept | 623.1 ms | 331.3 ms | 1.88x | 1.83x |
+| A description redone with one channel replaced | 105.4 ms | 68.2 ms | 1.55x | 1.39x |
+| The first cut: as it comes against prepared | 66.9 ms | 32.0 ms | 2.1x | 2.1x |
+| A kept body moved first against moved in the description | 65.1 ms | 38.6 ms | 1.7x | 1.7x |
+
+`retainsoak` showed no solids alive after any run and no growth between run lengths; the undo
+stack of ten previews grew the process 256 MB keeping its solids and 50 MB releasing them.
+
+**Warm-up is the first call only.** On one core the first ten or more calls of an operation ran
+slow. Here the second call is already at the settled figure:
+
+| 100k triangles | Call 1 | Call 2 | Call 1 with tiering off |
+|---|---|---|---|
+| Read binary STL | 156.6 ms | 39.3 ms | 52.0 ms |
+| Build spatial index | 230.3 ms | 29.2 ms | 39.2 ms |
+| Subtract a sphere | 163.2 ms | 85.6 ms | 112.2 ms |
+
+So the cost is a one-off 100 to 200 ms the first time each operation is used. Publishing the
+caller with ReadyToRun would remove most of it. Turning tiering off is not the fix: settled
+times are worse without it (the audit takes 17.9 ms against 12.8 ms).
 
 ## How it was built
 
@@ -355,6 +444,9 @@ Test first, one commit per step:
     cutting a mesh while a seventh releases it continuously) passed seven runs in seven.
 13. The audit pinned to its definitions, then rewritten: GREEN 365 before and after.
 14. The welder pinned to a plain welder, then rewritten: GREEN 369 before and after.
+15. `warmup` bench mode, and the workstation run at this commit.
+16. Sampling near the surface: RED 370 passed, 7 failed; GREEN 377. Four mutations were each
+    caught, one of them by the bit-for-bit comparison of the closed mesh.
 
 ## Not done
 
@@ -372,6 +464,8 @@ Each of these was discussed and left out on purpose.
   offer no closest point, so they would add to `ISpatialIndex`, not replace it.
 - **Other node kinds** (simplify, split). A step that leaves Manifold ends a description today.
 - **`Select`/`SelectMany` in BasicResults**, for query syntax.
+- **The managed offset fallback** still builds its own index. It only runs where the native
+  library is missing, which is not the target platform.
 - **The components pass** (9 to 12 ms and 9 MB at 100k triangles) builds a dictionary of lists
   the way the audit did. It is the next managed pass worth the same treatment.
 
@@ -384,4 +478,5 @@ cd bench/GeometryEngine.Benchmarks && dotnet run -c Release -- query
 cd bench/GeometryEngine.Benchmarks && dotnet run -c Release -- retain
 cd bench/GeometryEngine.Benchmarks && dotnet run -c Release -- retainsoak
 cd bench/GeometryEngine.Benchmarks && dotnet run -c Release -- warmup
+cd bench/GeometryEngine.Benchmarks && dotnet run -c Release -- smooth
 ```

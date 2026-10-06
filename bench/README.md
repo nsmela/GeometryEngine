@@ -110,6 +110,19 @@ handful of times a session may never see the second. Run it again with
 `DOTNET_TieredCompilation=0` set: if the first column then falls to the last, compilation is
 what the first calls pay for, and publishing the caller with ReadyToRun removes it.
 
+### Time an offset-smooth both ways, and phase by phase
+
+```
+dotnet run -c Release -- smooth
+```
+
+Closes three meshes with the distance grid filled both ways - every node measured exactly, and
+only the nodes within the closing's reach of the surface - and says whether the two produced the
+same mesh. Then times the phases separately: building the index, each way of sampling, the
+inflate and deflate on the grid, and meshing the level set. Sampling and meshing both use every
+core, so the phases are what show where the time goes on a given machine. It also says, per
+mesh, whether it qualifies to be sampled near its surface.
+
 ### Probe for memory leaks
 
 ```
