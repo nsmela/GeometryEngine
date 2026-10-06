@@ -310,6 +310,16 @@ internal sealed class MeshBvh
     }
 
     /// <summary>
+    /// The signed distance to the surface if it comes nearer than <paramref name="reach"/>, and
+    /// nothing if it does not. Not yet answered: see the tests.
+    /// </summary>
+    public bool TrySignedDistance(Vec3 point, double reach, out double distance)
+    {
+        distance = 0;
+        return false;
+    }
+
+    /// <summary>
     /// Distance to the surface, negative inside the solid.
     ///
     /// The sign is taken against the angle-weighted pseudonormal of whichever feature of the

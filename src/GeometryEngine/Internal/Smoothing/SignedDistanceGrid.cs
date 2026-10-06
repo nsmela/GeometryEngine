@@ -40,6 +40,9 @@ internal sealed class SignedDistanceGrid
 
     public int CellCount => _values.Length;
 
+    /// <summary>The field at every node, x fastest, then y, then z. For tests and measurement.</summary>
+    internal ReadOnlySpan<double> Values => _values;
+
     /// <summary>
     /// Samples <paramref name="field"/> over the box, one point per grid node. This is the only
     /// time the mesh is consulted; everything after it happens on the grid.
@@ -71,6 +74,13 @@ internal sealed class SignedDistanceGrid
 
         return new SignedDistanceGrid(min, cell, nx, ny, nz, values);
     }
+
+    /// <summary>
+    /// Samples a surface over the box exactly where it is nearer than <paramref name="reach"/>,
+    /// and elsewhere records only which side of it the node is on. Not yet done: see the tests.
+    /// </summary>
+    public static SignedDistanceGrid SampleNear(Spatial.MeshBvh surface, Vec3 min, Vec3 max, double cell, double reach) =>
+        throw new NotSupportedException("Sampling near the surface is not implemented yet.");
 
     /// <summary>
     /// Moves the zero level by <paramref name="distance"/>: positive grows the solid, negative

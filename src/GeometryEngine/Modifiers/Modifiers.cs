@@ -433,8 +433,11 @@ public sealed record OffsetSmoothRequest(IMesh Mesh, double Distance, int Iterat
 /// bolus, DoubleOffset's volume drifts -1.0 %, -2.3 %, -3.5 % over one to three rounds while
 /// this holds near +3.7 %, which is the direction a closing should move in.
 /// </summary>
-internal sealed class OffsetSmoothHandler
+internal sealed class OffsetSmoothHandler(GridSampling sampling = OffsetSmoothHandler.Default)
 {
+    /// <summary>How the engine fills the grid unless a test or a measurement asks otherwise.</summary>
+    internal const GridSampling Default = GridSampling.EveryNode;
+
     /// <summary>Cells across the longest side when the caller leaves the cell size to the engine.</summary>
     private const int DefaultResolution = 64;
 
@@ -481,43 +484,18 @@ internal sealed class OffsetSmoothHandler
 
         var distance = Math.Abs(request.Distance);
 
-        var min = mesh.Vertices[0];
-        var max = mesh.Vertices[0];
-        foreach (var vertex in mesh.Vertices)
+        var planned = GridFor(mesh, distance, request.CellSize);
+        if (planned.IsFailure)
         {
-            min = min.ComponentMin(vertex);
-            max = max.ComponentMax(vertex);
+            return planned.Error;
         }
 
-        var size = max - min;
-        var longest = Math.Max(size.X, Math.Max(size.Y, size.Z));
-        var cell = request.CellSize > 0 ? request.CellSize : longest / DefaultResolution;
-        if (!(cell > 0))
-        {
-            return MeshErrors.EmptyOperand;
-        }
-
-        var padded = size + (new Vec3(1, 1, 1) * (2 * (distance + (BoxMarginCells * cell))));
-        var nodes = padded.X * padded.Y * padded.Z / Math.Pow(cell, 3);
-        if (nodes > CellBudget)
-        {
-            cell *= Math.Cbrt(nodes / CellBudget);
-        }
-
-        var padding = new Vec3(1, 1, 1) * (distance + (BoxMarginCells * cell));
-        min -= padding;
-        max += padding;
-
-        // The inflation has to be resolvable on the grid, or the shift moves the zero level clean
-        // past every node that could hold the crossing and the surface disappears rather than
-        // rounding. Saying so beats returning an empty mesh and letting the caller guess.
-        if (distance < cell)
-        {
-            return ModifierErrors.DistanceBelowCell;
-        }
+        var (min, max, cell, reach) = planned.Value;
 
         var bvh = new MeshBvh(mesh);
-        var grid = SignedDistanceGrid.Sample(bvh.SignedDistance, min, max, cell);
+        var grid = sampling == GridSampling.NearSurface && CanSampleNearSurface(mesh)
+            ? SignedDistanceGrid.SampleNear(bvh, min, max, cell, reach)
+            : SignedDistanceGrid.Sample(bvh.SignedDistance, min, max, cell);
 
         for (var i = 0; i < request.Iterations; i++)
         {
@@ -534,7 +512,75 @@ internal sealed class OffsetSmoothHandler
             ? ModifierErrors.OffsetFailed
             : result;
     }
+
+    /// <summary>
+    /// The box and cell a closing by <paramref name="distance"/> is sampled on, and how far from
+    /// the surface the closing can ever read an exact distance.
+    /// </summary>
+    internal static Result<ClosingGrid> GridFor(IMesh mesh, double distance, double cellSize)
+    {
+        var min = mesh.Vertices[0];
+        var max = mesh.Vertices[0];
+        foreach (var vertex in mesh.Vertices)
+        {
+            min = min.ComponentMin(vertex);
+            max = max.ComponentMax(vertex);
+        }
+
+        var size = max - min;
+        var longest = Math.Max(size.X, Math.Max(size.Y, size.Z));
+        var cell = cellSize > 0 ? cellSize : longest / DefaultResolution;
+        if (!(cell > 0))
+        {
+            return MeshErrors.EmptyOperand;
+        }
+
+        var padded = size + (new Vec3(1, 1, 1) * (2 * (distance + (BoxMarginCells * cell))));
+        var nodes = padded.X * padded.Y * padded.Z / Math.Pow(cell, 3);
+        if (nodes > CellBudget)
+        {
+            cell *= Math.Cbrt(nodes / CellBudget);
+        }
+
+        // The inflation has to be resolvable on the grid, or the shift moves the zero level clean
+        // past every node that could hold the crossing and the surface disappears rather than
+        // rounding. Saying so beats returning an empty mesh and letting the caller guess.
+        if (distance < cell)
+        {
+            return ModifierErrors.DistanceBelowCell;
+        }
+
+        var reach = distance + (BoxMarginCells * cell);
+        var padding = new Vec3(1, 1, 1) * reach;
+        return new ClosingGrid(min - padding, max + padding, cell, reach);
+    }
+
+    /// <summary>
+    /// Whether the mesh is one whose far side can be told without measuring it. Not yet decided:
+    /// see the tests.
+    /// </summary>
+    internal static bool CanSampleNearSurface(IMesh mesh) => false;
 }
+
+/// <summary>How the distance grid behind a closing is filled from the mesh.</summary>
+internal enum GridSampling
+{
+    /// <summary>Every node is asked for its exact distance to the surface.</summary>
+    EveryNode,
+
+    /// <summary>
+    /// Nodes are asked only whether the surface is within the closing's reach; those beyond it
+    /// take the side of the node before them.
+    /// </summary>
+    NearSurface,
+}
+
+/// <summary>The grid a closing is sampled on.</summary>
+/// <param name="Reach">
+/// How far from the surface the closing can read an exact distance: the inflation plus the
+/// margin. The box is padded by exactly this much.
+/// </param>
+internal readonly record struct ClosingGrid(Vec3 Min, Vec3 Max, double Cell, double Reach);
 
 /// <summary>Ask for a mesh's creases rounded and its flat surface left alone.</summary>
 public sealed record SmoothEdgesRequest(IMesh Mesh, double KeepSharperThan, double Tolerance);
