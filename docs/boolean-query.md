@@ -18,10 +18,11 @@ implements, what was measured, and what was deliberately left out.
   early, and a part of a description can be moved inside the kernel without being read in again.
 - The managed topology audit is five times faster (136 ms to 28 ms at 100k triangles) and a
   binary STL of that size reads about a third faster.
-- An offset-smooth samples its grid only near the surface: 2.6 times faster on a 100k-triangle
-  mesh on one core, for the same mesh bit for bit.
-- Run on the target workstation (6 cores, Windows, .NET 10): threading held over 124 runs, and
-  the speedups carried over at the same ratios.
+- An offset-smooth samples its grid only near the surface: 1.5 to 1.9 times faster on the
+  workstation (2.6 times on one core), from a grid that is the same to the last bit.
+- Run twice on the target workstation (6 cores, Windows, .NET 10): threading held over 124
+  runs, and the speedups carried over at the same ratios. The second run also showed that
+  Manifold's level-set mesher does not list its output the same way twice on several cores.
 
 ```csharp
 var mould = engine.Booleans.Evaluate(
@@ -220,8 +221,9 @@ What was built:
   pass of the edge tally. Otherwise every node is measured as before.
 - The closing and the self-intersection count now use the mesh's shared index.
 
-The result is the same mesh, vertex for vertex and triangle for triangle, on every case tested.
-`bench smooth` on one core:
+The grid handed to the mesher is the same to the last bit, on every case tested and on any
+number of cores. The mesh is the same vertex for vertex **on one core only**; see "What the
+second workstation run found" below. `bench smooth` on one core:
 
 | Mesh | Whole closing before | After | Sampling before | After |
 |---|---|---|---|---|
@@ -240,8 +242,45 @@ Two limits:
 - **A closed mesh that passes through itself is not detected.** Finding that costs more than the
   sampling saves. Such a mesh may close differently where its surfaces disagree about the inside.
 
-Sampling and the level set both use every core, so the saving on the workstation will be
-smaller in milliseconds than above. `bench smooth` prints the phases to show where it lands.
+**What the second workstation run found.** On twelve threads (commit `2900701`):
+
+| Mesh | Whole closing before | After | Sampling before | After |
+|---|---|---|---|---|
+| `small test`, 23.5k triangles | 272.1 ms | 179.8 ms (1.51x) | 144.3 ms | 41.5 ms |
+| `test_smoothed_bolus`, 100.6k | 316.1 ms | 162.9 ms (1.94x) | 167.5 ms | 33.6 ms |
+
+| Phase after the change, ms | `small test` | `test_smoothed_bolus` | One core to twelve threads |
+|---|---|---|---|
+| Build the index | 5.4 | 27.1 | no faster |
+| Sample near the surface | 41.5 | 33.6 | 7.2x to 8.3x |
+| Inflate and deflate on the grid | 37.0 | 22.8 | no faster |
+| Mesh the level set | 93.6 | 56.9 | 4.8x to 6.5x |
+
+The inflate-and-deflate and the index build run on one thread, and are now a quarter to a third
+of what is left.
+
+The run also failed a test, and the failure was the test's. It compared the two closings' meshes
+for exact sequence equality, and failed 25 times in 25 on twelve threads and passed 5 in 5
+pinned to one core. Sometimes the vertices matched and only the triangles differed.
+
+The cause, read from Manifold's source at the shipped commit, is in the mesher and not in the
+sampling. `LevelSet` hands out vertex and triangle numbers from an atomic counter inside a
+parallel loop (`sdf.cpp` lines 282 and 362), so they are numbered in the order threads finish.
+The sort that follows is a stable sort on a 30-bit Morton code (`sort.cpp` lines 325 and 471),
+which leaves vertices that share a code in the order they arrived. One grid can therefore come
+back listed two ways. This was already true of every level-set result the engine produces,
+`Offset` included; this branch is where it was first compared closely enough to notice.
+
+What the tests now hold, and why:
+
+- **The grid, bit for bit.** It is everything this code decides, and it is the same on any
+  number of cores.
+- **The meshes' volume and area, to one part in a million, and watertightness.** That does not
+  ask the mesher to repeat itself.
+
+Not yet confirmed on the workstation: that two meshings by the *old* sampling also differ from
+each other there. `bench smoothsame` reports exactly that, case by case, with whether the
+surfaces are the same once order is set aside.
 
 ## What the branch implements
 
@@ -274,8 +313,8 @@ smaller in milliseconds than above. `bench smooth` prints the phases to show whe
 | `Internal/Smoothing/SignedDistanceGrid.cs` | `SampleNear` |
 | `Modifiers/Modifiers.cs` | `OffsetSmoothHandler`: `GridFor`, `CanSampleNearSurface`, `GridSampling` |
 | `Internal/TopologyTallies.cs` | moved from `Evaluators/`, now that two slices use it |
-| `tests/.../Modifiers/OffsetSmoothSamplingTests.cs` | 8 tests |
-| `bench/.../WarmupProfile.cs`, `SmoothProfile.cs` | `warmup` and `smooth` modes |
+| `tests/.../Modifiers/OffsetSmoothSamplingTests.cs` | 9 tests |
+| `bench/.../WarmupProfile.cs`, `SmoothProfile.cs` | `warmup`, `smooth` and `smoothsame` modes |
 
 Behaviour:
 
@@ -375,7 +414,7 @@ description builds in 271 ms with nothing kept.
 - BenchmarkDotNet could not be restored here. The whole benchmark project, entry point included,
   compiles against stand-ins for the five BenchmarkDotNet types it uses, and every console mode
   named in this document was run that way. The BenchmarkDotNet suite itself was not run.
-- The test suite was run on the same Linux setup: 377 passed, 0 failed, native path included.
+- The test suite was run on the same Linux setup: 378 passed, 0 failed, native path included.
 - The audit and welder timings are old and new code interleaved in one warmed process. The
   sandbox was noisy between runs (the old audit measured 136 to 179 ms), so trust the ratios
   more than the figures.
@@ -406,10 +445,22 @@ held (100,612 triangles):
 | A kept body moved first against moved in the description | 65.1 ms | 38.6 ms | 1.7x | 1.7x |
 
 `retainsoak` showed no solids alive after any run and no growth between run lengths; the undo
-stack of ten previews grew the process 256 MB keeping its solids and 50 MB releasing them.
+stack of ten previews grew the process 256 MB keeping its solids and 50 MB releasing them. Two
+figures differ from the one-core table in section 4 and are not explained:
 
-**Warm-up is the first call only.** On one core the first ten or more calls of an operation ran
-slow. Here the second call is already at the settled figure:
+- The 120-round prepare-cut-drop run reached 5 solids alive at once, where one core saw 3.
+- Dragging one kept body held 3 solids and grew the process 46 MB, at both 40 and 120 rounds,
+  where one core saw 2 solids and 4.1 MB. It does not rise with run length, so it is not a leak,
+  but it is eleven times the growth. The rounds themselves were faster (median 38.2 ms, slowest
+  49.7 ms).
+
+The preview rows also changed order: describing the whole mould again with solids kept
+(132.3 ms) was faster here than building on a preview that is read in again (138.3 ms), the
+reverse of one core. The conclusion stands: a preview the rest is built on costs nothing extra
+(100.9 ms against 102.5 ms).
+
+**Warm-up is mostly the first call.** On one core the first ten or more calls of an operation
+ran slow. Here the second call is at the settled figure for the operations below:
 
 | 100k triangles | Call 1 | Call 2 | Call 1 with tiering off |
 |---|---|---|---|
@@ -417,9 +468,15 @@ slow. Here the second call is already at the settled figure:
 | Build spatial index | 230.3 ms | 29.2 ms | 39.2 ms |
 | Subtract a sphere | 163.2 ms | 85.6 ms | 112.2 ms |
 
-So the cost is a one-off 100 to 200 ms the first time each operation is used. Publishing the
-caller with ReadyToRun would remove most of it. Turning tiering off is not the fix: settled
-times are worse without it (the audit takes 17.9 ms against 12.8 ms).
+So the cost is a one-off of up to about 200 ms the first time each operation is used. First-call
+figures vary by up to a third between runs (reading an STL took 156.6 ms in one and 195.5 ms in
+the next), so read them as ranges. One operation is an exception: a batch of 1,000 closest-point
+queries stayed three to five times slow through its tenth call in both runs.
+
+Tiering off brings the first call most of the way down, which suggests that publishing the
+caller with ReadyToRun would too. That is an inference: ReadyToRun itself was not measured.
+Turning tiering off is not the fix, since settled times are worse without it (the audit takes
+17.9 ms against 12.8 ms).
 
 ## How it was built
 
@@ -447,6 +504,9 @@ Test first, one commit per step:
 15. `warmup` bench mode, and the workstation run at this commit.
 16. Sampling near the surface: RED 370 passed, 7 failed; GREEN 377. Four mutations were each
     caught, one of them by the bit-for-bit comparison of the closed mesh.
+17. The second workstation run, at that commit: 376 passed and the bit-for-bit mesh comparison
+    failed, on twelve threads only. The comparison was moved to the grid, where it belongs and
+    still catches the same mutation: 378 passed here.
 
 ## Not done
 
@@ -466,6 +526,12 @@ Each of these was discussed and left out on purpose.
 - **`Select`/`SelectMany` in BasicResults**, for query syntax.
 - **The managed offset fallback** still builds its own index. It only runs where the native
   library is missing, which is not the target platform.
+- **A level-set result is not listed the same way twice on several cores.** The surface is the
+  same; the numbering is Manifold's and follows its threads. Two ways to make it repeatable,
+  neither taken: put the result in a fixed order after meshing, or mesh with
+  `manifold_level_set_seq`, which on this workstation would cost five to six times the meshing.
+- **The inflate-and-deflate on the grid runs on one thread**, and is now a quarter to a third of
+  an offset-smooth on twelve.
 - **The components pass** (9 to 12 ms and 9 MB at 100k triangles) builds a dictionary of lists
   the way the audit did. It is the next managed pass worth the same treatment.
 
@@ -479,4 +545,5 @@ cd bench/GeometryEngine.Benchmarks && dotnet run -c Release -- retain
 cd bench/GeometryEngine.Benchmarks && dotnet run -c Release -- retainsoak
 cd bench/GeometryEngine.Benchmarks && dotnet run -c Release -- warmup
 cd bench/GeometryEngine.Benchmarks && dotnet run -c Release -- smooth
+cd bench/GeometryEngine.Benchmarks && dotnet run -c Release -- smoothsame
 ```

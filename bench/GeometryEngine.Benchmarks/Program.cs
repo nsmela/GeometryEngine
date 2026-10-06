@@ -24,6 +24,7 @@ return (args.Length > 0 ? args[0] : "bench").ToLowerInvariant() switch
     "retainsoak" => RetainSoak.Run(),
     "warmup" => WarmupProfile.Run(),
     "smooth" => SmoothProfile.Run(),
+    "smoothsame" => SmoothProfile.RunAgreement(),
     "smoothfigures" => SmoothingFigures.Run(args.Length > 1 ? args[1] : "out"),
     _ => RunBenchmarks(args),
 };

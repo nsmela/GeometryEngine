@@ -490,7 +490,27 @@ internal sealed class OffsetSmoothHandler(GridSampling sampling = OffsetSmoothHa
             return planned.Error;
         }
 
-        var (min, max, cell, reach) = planned.Value;
+        var plan = planned.Value;
+        var grid = Close(mesh, plan, distance, request.Iterations);
+
+        // Meshed on Manifold's threads, which number the vertices and triangles in the order
+        // they happen to finish. The surface is the grid's; how it is listed can vary from one
+        // run to the next on a machine with several cores.
+        var result = ManifoldKernel.LevelSet(grid.Sample, plan.Min, plan.Max, plan.Cell, 0, metadata);
+        return result.IsFailure && result.Error == ManifoldErrors.EmptyResult
+            ? ModifierErrors.OffsetFailed
+            : result;
+    }
+
+    /// <summary>
+    /// The closing itself: the mesh sampled onto the grid, then inflated and deflated there the
+    /// given number of times. Everything up to the meshing, and everything about the result that
+    /// this code decides - the same inputs give the same grid to the last bit, on any number of
+    /// cores, which the mesh made from it does not promise.
+    /// </summary>
+    internal SignedDistanceGrid Close(IMesh mesh, ClosingGrid plan, double distance, int iterations)
+    {
+        var (min, max, cell, reach) = plan;
 
         // The mesh's own index, built now if nothing has asked for it yet. This is the only time
         // the mesh is consulted, and it is consulted only as far out as the closing can read.
@@ -499,7 +519,7 @@ internal sealed class OffsetSmoothHandler(GridSampling sampling = OffsetSmoothHa
             ? SignedDistanceGrid.SampleNear(surface, min, max, cell, reach)
             : SignedDistanceGrid.Sample(surface.SignedDistance, min, max, cell);
 
-        for (var i = 0; i < request.Iterations; i++)
+        for (var i = 0; i < iterations; i++)
         {
             // Inflate, then recover a true field from the grown surface - see Reinitialise for
             // why the recovery is not optional. Then deflate and recover again.
@@ -509,10 +529,7 @@ internal sealed class OffsetSmoothHandler(GridSampling sampling = OffsetSmoothHa
             grid.Reinitialise();
         }
 
-        var result = ManifoldKernel.LevelSet(grid.Sample, min, max, cell, 0, metadata);
-        return result.IsFailure && result.Error == ManifoldErrors.EmptyResult
-            ? ModifierErrors.OffsetFailed
-            : result;
+        return grid;
     }
 
     /// <summary>

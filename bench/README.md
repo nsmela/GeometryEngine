@@ -123,6 +123,19 @@ inflate and deflate on the grid, and meshing the level set. Sampling and meshing
 core, so the phases are what show where the time goes on a given machine. It also says, per
 mesh, whether it qualifies to be sampled near its surface.
 
+### See whether a closing comes back the same way twice
+
+```
+dotnet run -c Release -- smoothsame
+```
+
+For the seven cases the tests close: whether the two samplings hand the mesher the same grid,
+and then, five times over, whether the meshes are listed the same and whether they are the same
+surface once order is set aside - between the two samplings, and between two runs of the exact
+one. Manifold numbers a level set's vertices in the order its threads finish, so on several
+cores the last comparison is expected to differ in listing; this says whether it also differs
+in substance.
+
 ### Probe for memory leaks
 
 ```

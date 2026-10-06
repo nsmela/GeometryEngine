@@ -11,7 +11,7 @@ namespace GeometryEngine.Tests.Modifiers;
 /// operation's time, and most of those measurements were of nodes whose distance is never read.
 ///
 /// These tests hold the cheaper sampling to the exact one: the same distances where a distance
-/// is read, the same side everywhere else, and in the end the same mesh to the last bit.
+/// is read, the same side everywhere else, and in the end the same grid to the last bit.
 /// </summary>
 [Suite("Modifiers / offset smoothing: sampling near the surface")]
 public sealed class OffsetSmoothSamplingTests
@@ -153,45 +153,58 @@ public sealed class OffsetSmoothSamplingTests
     }
 
     [Fact]
-    public void Closing_through_the_band_gives_the_mesh_that_measuring_every_node_gives()
+    public void Closing_through_the_band_gives_the_grid_that_measuring_every_node_gives()
     {
-        var everyNode = new OffsetSmoothHandler(GridSampling.EveryNode);
-        var nearSurface = new OffsetSmoothHandler(GridSampling.NearSurface);
-
-        var cases = new (IMesh Mesh, double Distance, int Iterations, double CellSize)[]
+        // The grid is what the closing computes and what the mesher is handed, so it is where
+        // "the same result" can be said exactly: every node, to the last bit, however many cores
+        // sampled it.
+        //
+        // The mesh made from it cannot be held to that. Manifold meshes a level set on its own
+        // threads and numbers vertices and triangles in the order they finish, so two meshings of
+        // one grid can list the same surface differently - which is what this test found when it
+        // compared meshes, on twelve threads, and never on one.
+        foreach (var (mesh, distance, iterations, cellSize) in Cases())
         {
-            (Slotted(), 3, 1, 0),
-            (Slotted(), 3, 3, 0),
-            (Slotted(), 1.5, 2, 0.75),
-            (Fixtures.Sphere(Vec3.Zero, 10, 48), 2, 1, 0),
-            (Shell(), 1.5, 2, 0.75),
-            (Assets.LoadBench("ear_bolus.stl"), 2, 1, 0),
-            (Assets.LoadBench("chin_bolus.stl"), 3, 2, 0),
-        };
+            var plan = OffsetSmoothHandler.GridFor(mesh, distance, cellSize).Value;
 
-        foreach (var (mesh, distance, iterations, cellSize) in cases)
+            var expected = new OffsetSmoothHandler(GridSampling.EveryNode).Close(mesh, plan, distance, iterations).Values;
+            var actual = new OffsetSmoothHandler(GridSampling.NearSurface).Close(mesh, plan, distance, iterations).Values;
+
+            Check.Greater(expected.Length, 1000);
+            Check.True(System.Runtime.InteropServices.MemoryMarshal.AsBytes(expected)
+                .SequenceEqual(System.Runtime.InteropServices.MemoryMarshal.AsBytes(actual)));
+        }
+    }
+
+    [Fact]
+    public void Closing_through_the_band_gives_a_solid_of_the_same_size_and_soundness()
+    {
+        // What can be asked of the meshes without asking the mesher to repeat itself: the same
+        // volume and area to well inside anything a caller could see, and both watertight.
+        foreach (var (mesh, distance, iterations, cellSize) in Cases())
         {
-            var expected = everyNode.Handle(new OffsetSmoothRequest(mesh, distance, iterations, cellSize)).Value;
-            var actual = nearSurface.Handle(new OffsetSmoothRequest(mesh, distance, iterations, cellSize)).Value;
+            var request = new OffsetSmoothRequest(mesh, distance, iterations, cellSize);
+            var expected = new OffsetSmoothHandler(GridSampling.EveryNode).Handle(request).Value;
+            var actual = new OffsetSmoothHandler(GridSampling.NearSurface).Handle(request).Value;
 
-            Check.True(expected.TriangleCount > 0);
-            Check.True(expected.Vertices.AsSpan().SequenceEqual(actual.Vertices.AsSpan()));
-            Check.True(expected.Triangles.AsSpan().SequenceEqual(actual.Triangles.AsSpan()));
+            var (before, after) = (Statistics(expected), Statistics(actual));
+            Check.RelativelyClose(before.Volume, after.Volume, 1e-6);
+            Check.RelativelyClose(before.SurfaceArea, after.SurfaceArea, 1e-6);
+            Check.True(Fixtures.TopologyOf(actual).IsWatertight);
         }
     }
 
     [Fact]
     public void The_engine_closes_through_the_band()
     {
-        // What the engine hands out is the cheaper sampling, and it is the mesh the exact one makes.
+        Check.Equal(GridSampling.NearSurface, OffsetSmoothHandler.Default);
+
+        // And what it hands out is the solid the exact sampling makes.
         var slotted = Slotted();
         var exact = new OffsetSmoothHandler(GridSampling.EveryNode).Handle(new OffsetSmoothRequest(slotted, 3, 1, 0)).Value;
-
         var closed = Fixtures.Engine.Modifiers.OffsetSmooth(slotted, distance: 3, iterations: 1).Value;
 
-        Check.Equal(GridSampling.NearSurface, OffsetSmoothHandler.Default);
-        Check.True(closed.Vertices.AsSpan().SequenceEqual(exact.Vertices.AsSpan()));
-        Check.True(closed.Triangles.AsSpan().SequenceEqual(exact.Triangles.AsSpan()));
+        Check.RelativelyClose(Statistics(exact).Volume, Statistics(closed).Volume, 1e-6);
     }
 
     [Fact]
@@ -207,6 +220,19 @@ public sealed class OffsetSmoothSamplingTests
         _ = Fixtures.Engine.Evaluators.CountSelfIntersections(counted).Value;
         _ = ((ImmutableMesh)counted).Measurements.Index(() => throw new InvalidOperationException("counting did not keep the index"));
     }
+
+    private static (IMesh Mesh, double Distance, int Iterations, double CellSize)[] Cases() =>
+    [
+        (Slotted(), 3, 1, 0),
+        (Slotted(), 3, 3, 0),
+        (Slotted(), 1.5, 2, 0.75),
+        (Fixtures.Sphere(Vec3.Zero, 10, 48), 2, 1, 0),
+        (Shell(), 1.5, 2, 0.75),
+        (Assets.LoadBench("ear_bolus.stl"), 2, 1, 0),
+        (Assets.LoadBench("chin_bolus.stl"), 3, 2, 0),
+    ];
+
+    private static MeshStatistics Statistics(IMesh mesh) => Fixtures.Engine.Evaluators.GetStatistics(mesh).Value;
 
     private static IMesh Mesh(ImmutableArray<Vec3> vertices, ImmutableArray<int> triangles) =>
         Fixtures.Engine.CreateMesh(vertices, triangles, MeshMetadata.Named("sampled")).Value;
