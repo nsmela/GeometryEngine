@@ -66,108 +66,75 @@ internal sealed class TopologyHandler(Tolerance tolerance)
             return MeshErrors.EmptyOperand;
         }
 
-        var edgeUses = new Dictionary<(int Low, int High), int>();
-        var directedEdges = new HashSet<(int From, int To)>();
-        var faceSignatures = new HashSet<(int, int, int)>();
-        var shells = new DisjointSet(mesh.VertexCount);
+        // Read once: through the interface each of these is a call, and the loop below would
+        // make it three times a triangle.
+        var triangles = mesh.Triangles.AsSpan();
+        var vertices = mesh.Vertices.AsSpan();
 
+        var shells = new DisjointSet(vertices.Length);
+        var referenced = new bool[vertices.Length];
         var degenerate = 0;
-        var duplicateFaces = 0;
-        var inconsistentWinding = 0;
 
-        for (var t = 0; t < mesh.TriangleCount; t++)
+        for (var t = 0; t + 2 < triangles.Length; t += 3)
         {
-            var offset = t * 3;
-            var a = mesh.Triangles[offset];
-            var b = mesh.Triangles[offset + 1];
-            var c = mesh.Triangles[offset + 2];
+            var (a, b, c) = (triangles[t], triangles[t + 1], triangles[t + 2]);
 
             // Connectivity for the shell count spans every triangle, degenerate or not.
             shells.Union(a, b);
             shells.Union(b, c);
-
-            if (!faceSignatures.Add(Sorted(a, b, c)))
-            {
-                duplicateFaces++;
-            }
+            referenced[a] = referenced[b] = referenced[c] = true;
 
             // A triangle whose corners share an index has no edges to pair, so it is left out of
             // the edge tally. A sliver - distinct corners, no area - is not: it is still part of the
             // surface's connectivity, and a closed boolean result routinely carries them where one
             // operand's vertex lands on another's edge. Dropping its edges would report holes in a
             // surface that has none, and every volume computed downstream would read as zero.
-            if (a == b || b == c || c == a)
-            {
-                degenerate++;
-                continue;
-            }
-
-            if (IsSliver(mesh, a, b, c))
+            if (a == b || b == c || c == a || IsSliver(vertices[a], vertices[b], vertices[c]))
             {
                 degenerate++;
             }
-
-            // A consistently wound manifold traverses each half-edge exactly once. A
-            // half-edge seen twice in the same direction means two faces share it with
-            // the same orientation - one of them is wound backwards (an inverted face).
-            if (!directedEdges.Add((a, b))) { inconsistentWinding++; }
-            if (!directedEdges.Add((b, c))) { inconsistentWinding++; }
-            if (!directedEdges.Add((c, a))) { inconsistentWinding++; }
-
-            Record(edgeUses, a, b);
-            Record(edgeUses, b, c);
-            Record(edgeUses, c, a);
         }
 
-        var boundary = edgeUses.Values.Count(uses => uses == 1);
-        var nonManifold = edgeUses.Values.Count(uses => uses > 2);
-
-        var referenced = new bool[mesh.VertexCount];
-        foreach (var index in mesh.Triangles)
+        // Only vertices a triangle uses are ever joined, so each shell's root is one of them, and
+        // the vertices no triangle uses are the rest.
+        var (shellCount, unreferenced) = (0, 0);
+        for (var v = 0; v < referenced.Length; v++)
         {
-            referenced[index] = true;
+            if (!referenced[v])
+            {
+                unreferenced++;
+            }
+            else if (shells.Find(v) == v)
+            {
+                shellCount++;
+            }
         }
+
+        var edges = TopologyTallies.Edges(triangles, vertices.Length);
 
         return new TopologyValidation(
-            boundary,
-            nonManifold,
+            edges.Boundary,
+            edges.NonManifold,
             degenerate,
-            CountDuplicateVertices(mesh),
-            inconsistentWinding,
-            duplicateFaces,
-            shells.CountRootsAmong(mesh.Triangles))
+            CountDuplicateVertices(vertices),
+            edges.InconsistentWinding,
+            TopologyTallies.DuplicateFaces(triangles, vertices.Length),
+            shellCount)
         {
-            EdgeCount = edgeUses.Count,
-            UnreferencedVertexCount = referenced.Count(used => !used),
+            EdgeCount = edges.Edges,
+            UnreferencedVertexCount = unreferenced,
         };
     }
 
-    private static (int, int, int) Sorted(int a, int b, int c)
-    {
-        if (a > b) { (a, b) = (b, a); }
-        if (b > c) { (b, c) = (c, b); }
-        if (a > b) { (a, b) = (b, a); }
-        return (a, b, c);
-    }
+    private bool IsSliver(Vec3 a, Vec3 b, Vec3 c) =>
+        (b - a).Cross(c - a).Length * 0.5 <= _tolerance.Value * _tolerance.Value;
 
-    private bool IsSliver(IMesh mesh, int a, int b, int c)
-    {
-        var area = (mesh.Vertices[b] - mesh.Vertices[a]).Cross(mesh.Vertices[c] - mesh.Vertices[a]).Length * 0.5;
-        return area <= _tolerance.Value * _tolerance.Value;
-    }
-
-    private static void Record(Dictionary<(int, int), int> edgeUses, int from, int to)
-    {
-        var key = from < to ? (from, to) : (to, from);
-        edgeUses[key] = edgeUses.TryGetValue(key, out var uses) ? uses + 1 : 1;
-    }
-
-    private int CountDuplicateVertices(IMesh mesh)
+    private int CountDuplicateVertices(ReadOnlySpan<Vec3> vertices)
     {
         var welder = new VertexWelder(_tolerance.Value);
         var duplicates = 0;
 
-        foreach (var vertex in mesh.Vertices)
+        foreach (var vertex in vertices)
         {
             var before = welder.Vertices.Count;
             _ = welder.AddOrGet(vertex);
