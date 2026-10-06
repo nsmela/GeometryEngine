@@ -83,6 +83,20 @@ evaluated again with one channel replaced. Every run starts from meshes the kern
 seen. Prints the median time, the volume, and how many solids the engine was keeping when the
 run finished. `query` runs with nothing kept, so the two modes measure one thing each.
 
+It also times a first cut with and without `Prepare`, a kept body moved before a cut against
+moved inside the description, and a mould previewed half way against one built in one go.
+
+### Soak kept solids for pile-up, stalls and leaks
+
+```
+dotnet run -c Release -- retainsoak
+```
+
+Prepares, cuts and drops 100k-triangle meshes as fast as it can without ever forcing a
+collection, then does the same for a dragged body and for an undo stack of previews with and
+without `Release`. Reports the most solids alive at once, the slowest round against the median,
+and the memory still held after everything is dropped, at two run lengths.
+
 ### Probe for memory leaks
 
 ```

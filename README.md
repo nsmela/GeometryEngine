@@ -20,7 +20,9 @@ var mould = engine.Booleans.Evaluate(Solid.Of(block).Subtract(bolus).Union(lug).
 By default the kernel also keeps the solid it read in with each mesh, and the one behind each
 result, so a mesh used again is not read in again. That costs about 212 bytes of native memory
 per triangle while the mesh lives; `BspGeometryEngine.CreateWithManifold(SolidRetention.None)`
-turns it off.
+turns it off. `Booleans.Prepare(mesh)` pays for reading a mesh in ahead of its first use,
+`Booleans.Release(mesh)` lets its solid go early, and `Solid.Of(mesh).Translate(...)` moves a
+part inside the kernel without reading it in again.
 
 See [`docs/boolean-query.md`](docs/boolean-query.md) for the design and measurements.
 

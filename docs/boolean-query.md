@@ -14,6 +14,10 @@ implements, what was measured, and what was deliberately left out.
 - Under `SolidRetention.Keep`, the default, a mesh the kernel has read in and the mesh behind
   each result keep their native solid. Repeated cuts of one body and step-by-step chains then
   take 43-46% less time, for about 212 bytes of native memory per triangle while the mesh lives.
+- `Prepare` pays for reading a mesh in ahead of its first use, `Release` lets a kept solid go
+  early, and a part of a description can be moved inside the kernel without being read in again.
+- The managed topology audit is five times faster (136 ms to 28 ms at 100k triangles) and a
+  binary STL of that size reads about a third faster.
 
 ```csharp
 var mould = engine.Booleans.Evaluate(
@@ -98,6 +102,88 @@ Two checks decided the shape of the cache:
 - A kept solid costs **212 bytes per triangle** of native memory (20.3 MB at 100k), against
   about 24 for the managed mesh.
 
+### 4. Which ideas from the proposed architecture summary were worth taking?
+
+A summary proposing span-backed storage, a background BVH, recipe builders, a `SpatialMesh` type
+and zero-copy previews was reviewed point by point. Most of its reasoning did not fit this
+code, but four ideas survived once recast, and each was built, measured and soaked for memory.
+
+**Warm-up, as `IBooleans.Prepare(mesh)`.** The cost worth paying early is the kernel import, not
+the BVH build. `Prepare` reads a mesh in and keeps its solid; it is a hint, safe from any
+thread, and a failure reports a mesh the kernel will not take. At 100.6k triangles the first cut
+takes 180.4 ms as it comes and 87.5 ms prepared; preparing alone takes 91.7 ms.
+
+Reviewing it found a real defect: a mesh prepared on one thread and cut on another before that
+finished was read in by both, and eight threads meeting one mesh read it in eight times. A gate
+on the mesh's measurements now lets one thread read it in while the others wait and copy.
+
+**Fused transforms, as `Solid.Translate`, `Rotate` and `Scale`.** A moved part is evaluated by
+recording the transform on the solid the kernel already holds; Manifold multiplies successive
+transforms together and moves the vertices once. The managed kernel applies the same transform
+slices. A kept body nudged and cut once:
+
+| Mesh | Moved first, then cut | Moved in the description |
+|---|---|---|
+| 3.2k triangles | 5.1 ms | 2.7 ms |
+| 23.6k | 33.6 ms | 20.8 ms |
+| 100.6k | 177.9 ms | 106.2 ms |
+
+With nothing kept the two cost the same (181.1 ms and 191.7 ms at 100.6k).
+
+**Previews, through kept results, and `IBooleans.Release(mesh)`.** A preview is a
+sub-description evaluated to look at; the rest is built on its mesh, which never leaves the
+kernel. A mould shown half way, 100.6k triangles:
+
+| Route | Time |
+|---|---|
+| No preview, one description | 294.0 ms |
+| Preview, rest built on it, kept | 284.2 ms |
+| Preview, rest built on it, read in again | 374.7 ms |
+| Preview, whole mould described again, kept | 400.8 ms |
+
+So with solids kept, a preview the rest is built on costs nothing over having had none. The
+cost is memory for previews held but not built on, which is what `Release` is for. It empties
+the mesh's slot and disposes the solid; the mesh stays usable and is read in again if needed.
+
+**Hot managed loops.** Hoisting spans turned out not to be the gain: warmed, the statistics pass
+measured 1.26 ms against 1.22 ms at 100k triangles, because the runtime already sees through
+the interface, and that change was not kept. Timing every managed pass showed where the time
+was: the topology audit, at 136 ms and 38 MB, cost more than reading the mesh into the kernel.
+
+- Its edge and face counts used three hash tables of tuples. They are now counted in buckets
+  keyed by each edge's lower vertex, in flat arrays allocated once.
+- Its duplicate-vertex count used the vertex welder, which searched twenty-seven cells per
+  vertex. The welder now files vertices in cells twice the tolerance across and searches eight.
+  When several kept vertices are within reach it returns the one the old search would have met
+  first, so welded meshes keep the indices they always had.
+
+| | Before | After |
+|---|---|---|
+| Topology audit, 100.6k triangles | 136.4 ms, 37.9 MB | 27.6 ms, 12.5 MB |
+| Topology audit, 23.6k | 23.7 ms, 8.9 MB | 5.6 ms, 3.0 MB |
+| Topology audit, 3.2k | 5.7 ms, 1.6 MB | 2.8 ms, 0.4 MB |
+| Welding 300,000 STL corners | 101 ms | 64 ms |
+| Reading a 100k-triangle binary STL | 108 to 125 ms | 69 to 80 ms |
+
+Both rewrites are held to plain reference implementations in the tests, answer for answer, and
+each survived four deliberate mutations being caught. A stronger hash for grid cells was tried
+and measured no gain, so it was not kept.
+
+**Memory.** `bench retainsoak` prepares, cuts and drops 100k-triangle meshes without ever
+forcing a collection:
+
+| Scenario | Solids alive at most | Process growth |
+|---|---|---|
+| Prepare, cut, drop; size declared to the collector | 3 | 69 MB |
+| The same with the declaration disabled | 12 | 259 MB |
+| One kept body dragged and cut, 120 rounds | 2 | 4.1 MB |
+| Undo stack of ten previews, each keeping its solid | 13 | 276 MB |
+| The same, released as they leave the screen | 1 | 44 MB |
+
+No solids were alive after any run, growth did not rise with run length, and the slowest round
+of the drag was 122.9 ms against a median of 89.2 ms. The declaration costs one more full
+collection a round with no change in round time.
+
 ## What the branch implements
 
 | File | Change |
@@ -117,6 +203,14 @@ Two checks decided the shape of the cache:
 | `Internal/Native/ManifoldKernel.cs` | `Acquire`, `Produce`, `Keep`; used by `Evaluate`, `Batch`, `Split` |
 | `tests/.../Booleans/RetainedSolidTests.cs` | 11 tests |
 | `bench/.../RetainCompare.cs` | `retain` mode |
+| `Core/Geometry/IGeometryEngine.cs` | `IBooleans.Prepare(IMesh)`, `IBooleans.Release(IMesh)` |
+| `Core/Geometry/Solid.cs` | `Transformed` part and `SolidTransform`; `Translate`, `Rotate`, `Scale` |
+| `Core/Geometry/MeshMeasurements.cs` | a gate so one thread reads a mesh in while others wait |
+| `Evaluators/TopologyTallies.cs` | edge and face counts in buckets |
+| `Internal/Csg/SpatialIndexes.cs` | `VertexWelder` searching eight cells |
+| `tests/.../Booleans/PrepareTests.cs`, `SolidTransformTests.cs`, `PreviewTests.cs` | 28 tests |
+| `tests/.../Evaluators/TopologyTallyTests.cs`, `Csg/VertexWelderTests.cs` | 8 tests |
+| `bench/.../RetainSoak.cs` | `retainsoak` mode |
 
 Behaviour:
 
@@ -154,15 +248,15 @@ composed. Anything still held on any exit is freed in the one `finally`.
 ### Keeping solids
 
 - **Lifetime is the mesh's.** The solid hangs off the mesh's measurements, so it is shared by
-  `WithMetadata` copies and released by the finalizer once the mesh is collected. There is no
-  explicit release.
+  `WithMetadata` copies and released by the finalizer once the mesh is collected, or earlier by
+  `IBooleans.Release`.
 - **Operations never touch what is kept.** They take a copy, which in Manifold is a second
   reference to the same immutable solid, and free it like any handle they own.
 - **Results are kept too**, so a result used as the next operand never leaves the kernel.
 - **The collector is told.** Each kept solid adds memory pressure of 212 bytes per triangle.
-- **Not carried through a transform.** A moved mesh is read in afresh.
-- **Two threads reading one mesh in at once** each build a solid; the first is kept and the
-  other released.
+- **Carried through a transform only inside a description.** `Solid.Of(mesh).Translate(...)`
+  reuses the kept solid; a mesh moved with `engine.Transforms` is read in afresh.
+- **Two threads meeting one mesh at once** read it in once: the second waits and copies.
 - **`MeshesImported`** now counts what a call read in, not how many distinct meshes it used.
 - `Simplify`, `SmoothEdges`, `Extrude`, `LevelSet` and the `Modifiers` batch union do not keep.
 
@@ -216,7 +310,10 @@ description builds in 271 ms with nothing kept.
 - `QueryCompare.cs` and `RetainCompare.cs` were compiled and run through a stand-alone project,
   because BenchmarkDotNet could not be restored here. The `query` and `retain` entries in
   `bench/.../Program.cs` are therefore not compiled as part of the full benchmark project.
-- The test suite was run on the same Linux setup: 332 passed, 0 failed, native path included.
+- The test suite was run on the same Linux setup: 369 passed, 0 failed, native path included.
+- The audit and welder timings are old and new code interleaved in one warmed process. The
+  sandbox was noisy between runs (the old audit measured 136 to 179 ms), so trust the ratios
+  more than the figures.
 - **Thread safety is argued and tested, but only on one core.** Manifold guards a shared leaf
   with a mutex (`CsgLeafNode::GetImpl`), and the test races eight threads through first use and
   32 cuts of one kept mesh. On a single core that interleaves rather than runs in parallel, so
@@ -237,6 +334,15 @@ Test first, one commit per step:
 7. `RetainedSolid` and the kernel's acquire and produce paths. GREEN: 332. Checked by removing
    the native free: the leak test reports 117 MB retained against its 64 MB ceiling.
 8. `retain` bench mode and section 3 of this document.
+9. `Prepare`: RED 336 passed, 3 failed; GREEN 339.
+10. Moved parts: RED 340 passed, 11 failed; GREEN 352. A failure-path leak test was checked by
+    leaking one moved solid a step: 1.5 GB retained against its 64 MB ceiling.
+11. One read-in per mesh across threads: RED on a count of 16 imports where 9 were needed;
+    GREEN 353.
+12. Previews and `Release`: RED 357 passed, 4 failed; GREEN 361. The release race (six threads
+    cutting a mesh while a seventh releases it continuously) passed seven runs in seven.
+13. The audit pinned to its definitions, then rewritten: GREEN 365 before and after.
+14. The welder pinned to a plain welder, then rewritten: GREEN 369 before and after.
 
 ## Not done
 
@@ -247,16 +353,15 @@ Each of these was discussed and left out on purpose.
   8 MB per 100k-triangle boolean. Add `[StructLayout(LayoutKind.Sequential)]` and a size test to
   `Vec3` first.
 - **An `int32` entry in `geometryengine_native`**, to drop the index widening.
-- **Carrying a kept solid through a transform.** Manifold moves its BVH with the solid, so
-  `manifold_transform` on a kept handle would save the re-import after `Translate` or `Rotate`.
+- **Carrying a kept solid through `engine.Transforms`.** A part moved inside a description
+  reuses its solid; a mesh moved with `Transforms.Translate` first is still read in afresh.
 - **Manifold's own queries on a kept solid.** `manifold_ray_cast`, `manifold_min_gap` and
   `manifold_winding_number` are exported at the shipped commit. They need a valid manifold and
   offer no closest point, so they would add to `ISpatialIndex`, not replace it.
-- **A bound or an explicit release** for kept solids. Today the only limits are the mesh's
-  lifetime and the memory pressure declared to the collector.
-- **Other node kinds** (transform, simplify, split). A step that leaves Manifold ends a
-  description today.
+- **Other node kinds** (simplify, split). A step that leaves Manifold ends a description today.
 - **`Select`/`SelectMany` in BasicResults**, for query syntax.
+- **The components pass** (9 to 12 ms and 9 MB at 100k triangles) builds a dictionary of lists
+  the way the audit did. It is the next managed pass worth the same treatment.
 
 ## Running
 
@@ -265,4 +370,5 @@ dotnet run -c Release --project tests/GeometryEngine.Tests                 # who
 dotnet run -c Release --project tests/GeometryEngine.Tests -- description  # filter on test name
 cd bench/GeometryEngine.Benchmarks && dotnet run -c Release -- query
 cd bench/GeometryEngine.Benchmarks && dotnet run -c Release -- retain
+cd bench/GeometryEngine.Benchmarks && dotnet run -c Release -- retainsoak
 ```
