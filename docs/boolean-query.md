@@ -307,9 +307,9 @@ description builds in 271 ms with nothing kept.
 - The marshalling and phase tables in section 1 come from separate microbenchmarks (a C# copy of
   the marshalling loops, and Manifold 3.2.1 timed from C++ on sphere operands). They are not in
   the repository.
-- `QueryCompare.cs` and `RetainCompare.cs` were compiled and run through a stand-alone project,
-  because BenchmarkDotNet could not be restored here. The `query` and `retain` entries in
-  `bench/.../Program.cs` are therefore not compiled as part of the full benchmark project.
+- BenchmarkDotNet could not be restored here. The whole benchmark project, entry point included,
+  compiles against stand-ins for the five BenchmarkDotNet types it uses, and every console mode
+  named in this document was run that way. The BenchmarkDotNet suite itself was not run.
 - The test suite was run on the same Linux setup: 369 passed, 0 failed, native path included.
 - The audit and welder timings are old and new code interleaved in one warmed process. The
   sandbox was noisy between runs (the old audit measured 136 to 179 ms), so trust the ratios
@@ -319,6 +319,18 @@ description builds in 271 ms with nothing kept.
   32 cuts of one kept mesh. On a single core that interleaves rather than runs in parallel, so
   repeat it on the target machine before relying on it.
 - The 212 bytes per triangle is one measurement of heap growth on glibc, at two mesh sizes.
+
+### Still to be settled on the target machine
+
+Everything above was measured on one core. Three questions need a multi-core Windows run:
+
+1. **Do the threading tests hold under real parallelism?** Run the test suite several times.
+2. **Do the timings carry over to the TBB build?** Run `query`, `retain` and `retainsoak`.
+3. **How wide is the gap between first calls and settled ones?** Run `warmup`, then again with
+   `DOTNET_TieredCompilation=0`. On one core here the first read of a 100k-triangle STL took
+   416 ms against 66 ms settled, and the first index build 301 ms against 53 ms; with tiering
+   off the first read took 106 ms. Several cores should narrow this, and by how much decides
+   whether publishing the caller with ReadyToRun is worth doing.
 
 ## How it was built
 
@@ -371,4 +383,5 @@ dotnet run -c Release --project tests/GeometryEngine.Tests -- description  # fil
 cd bench/GeometryEngine.Benchmarks && dotnet run -c Release -- query
 cd bench/GeometryEngine.Benchmarks && dotnet run -c Release -- retain
 cd bench/GeometryEngine.Benchmarks && dotnet run -c Release -- retainsoak
+cd bench/GeometryEngine.Benchmarks && dotnet run -c Release -- warmup
 ```

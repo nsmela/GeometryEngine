@@ -97,6 +97,19 @@ collection, then does the same for a dragged body and for an undo stack of previ
 without `Release`. Reports the most solids alive at once, the slowest round against the median,
 and the memory still held after everything is dropped, at two run lengths.
 
+### See what the first calls cost
+
+```
+dotnet run -c Release -- warmup
+```
+
+Times eight operations call after call from a cold process and prints calls 1, 2, 3, 5, 10, 20
+and 40 of each, with the first against the settled figure. .NET compiles a method quickly the
+first time it runs and properly once it has been called enough; a caller that makes each call a
+handful of times a session may never see the second. Run it again with
+`DOTNET_TieredCompilation=0` set: if the first column then falls to the last, compilation is
+what the first calls pay for, and publishing the caller with ReadyToRun removes it.
+
 ### Probe for memory leaks
 
 ```
