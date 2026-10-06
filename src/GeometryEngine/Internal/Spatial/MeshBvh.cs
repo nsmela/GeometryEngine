@@ -240,7 +240,15 @@ internal sealed class MeshBvh
     public bool ClosestPoint(Vec3 point, out Vec3 closest, out int triangle, out double distance) =>
         ClosestPoint(point, out closest, out triangle, out distance, out _);
 
-    private bool ClosestPoint(Vec3 point, out Vec3 closest, out int triangle, out double distance, out TriangleFeature feature)
+    private bool ClosestPoint(Vec3 point, out Vec3 closest, out int triangle, out double distance, out TriangleFeature feature) =>
+        ClosestPoint(point, double.PositiveInfinity, out closest, out triangle, out distance, out feature);
+
+    /// <param name="withinSquared">
+    /// Only a point nearer than the root of this is looked for. The search starts with this as the
+    /// distance to beat, so every box at least that far away is passed over without being opened.
+    /// </param>
+    private bool ClosestPoint(
+        Vec3 point, double withinSquared, out Vec3 closest, out int triangle, out double distance, out TriangleFeature feature)
     {
         closest = point;
         triangle = -1;
@@ -251,7 +259,7 @@ internal sealed class MeshBvh
             return false;
         }
 
-        var bestSquared = double.MaxValue;
+        var bestSquared = withinSquared;
         var stack = RentStack(StackDepth);
         var top = 0;
         stack[top++] = 0;
@@ -310,16 +318,6 @@ internal sealed class MeshBvh
     }
 
     /// <summary>
-    /// The signed distance to the surface if it comes nearer than <paramref name="reach"/>, and
-    /// nothing if it does not. Not yet answered: see the tests.
-    /// </summary>
-    public bool TrySignedDistance(Vec3 point, double reach, out double distance)
-    {
-        distance = 0;
-        return false;
-    }
-
-    /// <summary>
     /// Distance to the surface, negative inside the solid.
     ///
     /// The sign is taken against the angle-weighted pseudonormal of whichever feature of the
@@ -330,20 +328,34 @@ internal sealed class MeshBvh
     /// closest-point search, the sign flips essentially at random, and an isosurface built on the
     /// field comes back shredded into islands.
     /// </summary>
-    public double SignedDistance(Vec3 point)
+    public double SignedDistance(Vec3 point) =>
+        TrySignedDistance(point, double.PositiveInfinity, out var distance) ? distance : double.MaxValue;
+
+    /// <summary>
+    /// The signed distance to the surface if it comes nearer than <paramref name="reach"/>, and
+    /// nothing if it does not.
+    ///
+    /// Saying how far is worth looking is what makes this cheap. A point deep inside a solid or
+    /// far outside it is about as far from a great deal of the surface, so finding which part is
+    /// nearest means descending into most of the tree; finding that none of it is within reach
+    /// means turning back at the first few boxes. Where the surface is within reach the answer is
+    /// the one <see cref="SignedDistance"/> gives, to the last bit: the search runs in the same
+    /// order and settles on the same triangle, having only started with less to beat.
+    /// </summary>
+    public bool TrySignedDistance(Vec3 point, double reach, out double distance)
     {
-        if (!ClosestPoint(point, out var closest, out var triangle, out var distance, out var feature))
+        if (!ClosestPoint(point, reach * reach, out var closest, out var triangle, out distance, out var feature))
         {
-            return double.MaxValue;
+            return false;
         }
 
         var normal = PseudoNormal(triangle, feature);
-        if (normal == Vec3.Zero)
+        if (normal != Vec3.Zero && (point - closest).Dot(normal) < 0)
         {
-            return distance;
+            distance = -distance;
         }
 
-        return (point - closest).Dot(normal) < 0 ? -distance : distance;
+        return true;
     }
 
     /// <summary>

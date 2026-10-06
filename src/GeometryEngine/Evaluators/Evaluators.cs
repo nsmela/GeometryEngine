@@ -324,7 +324,9 @@ internal sealed class SelfIntersectionsHandler
             return 0;
         }
 
-        var bvh = new Internal.Spatial.MeshBvh(mesh);
+        // The mesh's own index, built now if nothing has asked for it yet, and there for whatever
+        // asks next.
+        var bvh = Spatial.SharedIndexes.For(mesh).Inner.Tree;
         var intersecting = new bool[mesh.TriangleCount];
         var triangles = mesh.Triangles;
         var candidates = new List<int>();

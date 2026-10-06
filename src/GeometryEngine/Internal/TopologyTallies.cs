@@ -1,4 +1,4 @@
-namespace GeometryEngine.Evaluators;
+namespace GeometryEngine.Internal;
 
 /// <summary>What the edges of a mesh add up to.</summary>
 /// <param name="Edges">Distinct undirected edges.</param>

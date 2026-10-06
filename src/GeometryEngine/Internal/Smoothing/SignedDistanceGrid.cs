@@ -77,10 +77,67 @@ internal sealed class SignedDistanceGrid
 
     /// <summary>
     /// Samples a surface over the box exactly where it is nearer than <paramref name="reach"/>,
-    /// and elsewhere records only which side of it the node is on. Not yet done: see the tests.
+    /// and elsewhere records only which side of it the node is on, as plus or minus the reach.
+    ///
+    /// For a caller that reads exact distances only near the surface - a closing reads them within
+    /// its inflation and a cell or two - this is the grid <see cref="Sample"/> would give as far as
+    /// that caller can tell, for a fraction of the searching: most nodes of a box are not near the
+    /// surface, and a node that is not is answered as soon as the search finds nothing in reach.
+    ///
+    /// A node out of reach takes the side of the node before it in its row. That is sound because
+    /// distance changes by at most a cell from one node to the next, so with a reach wider than a
+    /// cell no step can pass from out of reach on one side to out of reach on the other: between
+    /// two such nodes there is always one within reach, which is measured and says which side it
+    /// is on. Only the first out-of-reach node of a row has nothing before it, and it is asked
+    /// outright.
+    ///
+    /// The surface must separate inside from outside for a side to mean anything. A mesh with a
+    /// hole in it, or a face wound backwards, should be sampled with <see cref="Sample"/>.
     /// </summary>
-    public static SignedDistanceGrid SampleNear(Spatial.MeshBvh surface, Vec3 min, Vec3 max, double cell, double reach) =>
-        throw new NotSupportedException("Sampling near the surface is not implemented yet.");
+    public static SignedDistanceGrid SampleNear(Spatial.MeshBvh surface, Vec3 min, Vec3 max, double cell, double reach)
+    {
+        if (!(reach > cell))
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(reach), reach, $"The reach must be wider than the cell ({cell}) for a side to carry from one node to the next.");
+        }
+
+        var nx = Math.Max(2, (int)Math.Ceiling((max.X - min.X) / cell) + 1);
+        var ny = Math.Max(2, (int)Math.Ceiling((max.Y - min.Y) / cell) + 1);
+        var nz = Math.Max(2, (int)Math.Ceiling((max.Z - min.Z) / cell) + 1);
+
+        var values = new double[nx * ny * nz];
+
+        Parallel.For(0, nz, k =>
+        {
+            for (var j = 0; j < ny; j++)
+            {
+                var row = ((k * ny) + j) * nx;
+
+                // Which side the last node was on: zero until this row has one to go by.
+                var side = 0.0;
+                for (var i = 0; i < nx; i++)
+                {
+                    var point = new Vec3(min.X + (i * cell), min.Y + (j * cell), min.Z + (k * cell));
+                    if (surface.TrySignedDistance(point, reach, out var distance))
+                    {
+                        side = distance < 0 ? -1 : 1;
+                        values[row + i] = distance;
+                        continue;
+                    }
+
+                    if (side == 0)
+                    {
+                        side = surface.SignedDistance(point) < 0 ? -1 : 1;
+                    }
+
+                    values[row + i] = side * reach;
+                }
+            }
+        });
+
+        return new SignedDistanceGrid(min, cell, nx, ny, nz, values);
+    }
 
     /// <summary>
     /// Moves the zero level by <paramref name="distance"/>: positive grows the solid, negative

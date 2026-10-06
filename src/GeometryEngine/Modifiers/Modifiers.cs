@@ -436,7 +436,7 @@ public sealed record OffsetSmoothRequest(IMesh Mesh, double Distance, int Iterat
 internal sealed class OffsetSmoothHandler(GridSampling sampling = OffsetSmoothHandler.Default)
 {
     /// <summary>How the engine fills the grid unless a test or a measurement asks otherwise.</summary>
-    internal const GridSampling Default = GridSampling.EveryNode;
+    internal const GridSampling Default = GridSampling.NearSurface;
 
     /// <summary>Cells across the longest side when the caller leaves the cell size to the engine.</summary>
     private const int DefaultResolution = 64;
@@ -492,10 +492,12 @@ internal sealed class OffsetSmoothHandler(GridSampling sampling = OffsetSmoothHa
 
         var (min, max, cell, reach) = planned.Value;
 
-        var bvh = new MeshBvh(mesh);
+        // The mesh's own index, built now if nothing has asked for it yet. This is the only time
+        // the mesh is consulted, and it is consulted only as far out as the closing can read.
+        var surface = Spatial.SharedIndexes.For(mesh).Inner.Tree;
         var grid = sampling == GridSampling.NearSurface && CanSampleNearSurface(mesh)
-            ? SignedDistanceGrid.SampleNear(bvh, min, max, cell, reach)
-            : SignedDistanceGrid.Sample(bvh.SignedDistance, min, max, cell);
+            ? SignedDistanceGrid.SampleNear(surface, min, max, cell, reach)
+            : SignedDistanceGrid.Sample(surface.SignedDistance, min, max, cell);
 
         for (var i = 0; i < request.Iterations; i++)
         {
@@ -556,10 +558,19 @@ internal sealed class OffsetSmoothHandler(GridSampling sampling = OffsetSmoothHa
     }
 
     /// <summary>
-    /// Whether the mesh is one whose far side can be told without measuring it. Not yet decided:
-    /// see the tests.
+    /// Whether the mesh is one whose far side can be told without measuring it: closed, with every
+    /// edge shared by exactly two faces that walk it opposite ways. Then the surface separates an
+    /// inside from an outside, and a node out of reach is on the side its neighbour was.
+    ///
+    /// A mesh with a hole or a backwards face has no such sides. Its exact field is not sound
+    /// either, but it is what callers have been getting, so such a mesh goes on being measured at
+    /// every node. A closed mesh that passes through itself is not caught here - finding that
+    /// costs more than the sampling saves - and may close differently from before in the region
+    /// where its own surfaces disagree about which side is in.
     /// </summary>
-    internal static bool CanSampleNearSurface(IMesh mesh) => false;
+    internal static bool CanSampleNearSurface(IMesh mesh) =>
+        TopologyTallies.Edges(mesh.Triangles.AsSpan(), mesh.VertexCount)
+            is { Boundary: 0, NonManifold: 0, InconsistentWinding: 0 };
 }
 
 /// <summary>How the distance grid behind a closing is filled from the mesh.</summary>
