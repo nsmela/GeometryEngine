@@ -77,16 +77,19 @@ internal static class SmoothProfile
             var before = everyNode.Handle(request(Unseen())).Value;
             var after = nearSurface.Handle(request(Unseen())).Value;
 
-            Report("the whole closing / every node exactly", () =>
-            {
-                var input = Unseen();
-                return () => everyNode.Handle(request(input));
-            });
-            Report("the whole closing / near the surface", () =>
-            {
-                var input = Unseen();
-                return () => nearSurface.Handle(request(input));
-            });
+            ReportPair(
+                "the whole closing / every node exactly",
+                () =>
+                {
+                    var input = Unseen();
+                    return () => everyNode.Handle(request(input));
+                },
+                "the whole closing / near the surface",
+                () =>
+                {
+                    var input = Unseen();
+                    return () => nearSurface.Handle(request(input));
+                });
             Console.WriteLine(
                 $"  result: {after.TriangleCount:N0} triangles, volume {engine.Evaluators.GetStatistics(after).Value.Volume:N3}");
             Agreement(mesh, Distance, 1, 0);
@@ -227,6 +230,37 @@ internal static class SmoothProfile
 
         Array.Sort(triangles);
         return (order.Select(v => mesh.Vertices[v]).ToArray(), triangles);
+    }
+
+    /// <summary>
+    /// Times two pieces of work against each other, turn and turn about, and going first by turns.
+    ///
+    /// Timed one after the other, the second came out 8% and 18% ahead on a mesh where the two do
+    /// exactly the same work: whatever goes first pays for something the second finds done. Taking
+    /// turns gives each the same share of that.
+    /// </summary>
+    private static void ReportPair(string firstLabel, Func<Action> first, string secondLabel, Func<Action> second)
+    {
+        const int Rounds = 7;
+        first()();
+        second()();
+
+        var (firstTimes, secondTimes) = (new List<double>(Rounds), new List<double>(Rounds));
+        for (var round = 0; round < Rounds; round++)
+        {
+            foreach (var isFirst in round % 2 == 0 ? new[] { true, false } : new[] { false, true })
+            {
+                var work = (isFirst ? first : second)();
+                var watch = Stopwatch.StartNew();
+                work();
+                (isFirst ? firstTimes : secondTimes).Add(watch.Elapsed.TotalMilliseconds);
+            }
+        }
+
+        firstTimes.Sort();
+        secondTimes.Sort();
+        Console.WriteLine($"  {firstLabel,-46} {firstTimes[Rounds / 2],9:N1} ms");
+        Console.WriteLine($"  {secondLabel,-46} {secondTimes[Rounds / 2],9:N1} ms");
     }
 
     /// <param name="prepare">Builds one run's inputs, untimed, and returns the work to time.</param>

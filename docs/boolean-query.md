@@ -18,11 +18,13 @@ implements, what was measured, and what was deliberately left out.
   early, and a part of a description can be moved inside the kernel without being read in again.
 - The managed topology audit is five times faster (136 ms to 28 ms at 100k triangles) and a
   binary STL of that size reads about a third faster.
-- An offset-smooth samples its grid only near the surface: 1.5 to 1.9 times faster on the
-  workstation (2.6 times on one core), from a grid that is the same to the last bit.
-- Run twice on the target workstation (6 cores, Windows, .NET 10): threading held over 124
-  runs, and the speedups carried over at the same ratios. The second run also showed that
-  Manifold's level-set mesher does not list its output the same way twice on several cores.
+- An offset-smooth samples its grid only near the surface. On the workstation the sampling is
+  3.4 to 5 times faster and the whole operation about 1.5 to 1.8 times, from a grid that is the
+  same to the last bit.
+- Run three times on the target workstation (6 cores, Windows, .NET 10): the concurrency tests
+  passed 240 of 240 isolated runs, and the speedups carried over at the same ratios each time.
+  The runs also showed that Manifold's level-set mesher does not list its output the same way
+  twice on several cores.
 
 ```csharp
 var mould = engine.Booleans.Evaluate(
@@ -259,6 +261,12 @@ Two limits:
 The inflate-and-deflate and the index build run on one thread, and are now a quarter to a third
 of what is left.
 
+A third run at the same commit measured 252.0 to 169.2 ms (1.49x) and 273.9 to 155.7 ms (1.76x),
+with sampling at 3.4x and 4.9x. It also showed the whole-closing ratios are flattered: on
+`ear_bolus`, where both rows do identical work, the row timed second came out 8% and 18% ahead
+in the two runs. The sampling figures are timed separately and agree between runs, so they are
+the ones to trust. `bench smooth` now times the two closings turn and turn about.
+
 The run also failed a test, and the failure was the test's. It compared the two closings' meshes
 for exact sequence equality, and failed 25 times in 25 on twelve threads and passed 5 in 5
 pinned to one core. Sometimes the vertices matched and only the triangles differed.
@@ -430,7 +438,8 @@ The branch at `82b7ec2` was run on a Ryzen 5 5600 (6 cores, 12 threads), Windows
 the one-core sandbox could not.
 
 **Threading holds.** Four full runs of the suite passed (369 tests each). The six tests that
-exercise real concurrency passed 120 of 120 isolated runs, with no crash or hang.
+exercise real concurrency passed 120 of 120 isolated runs, with no crash or hang, and 120 of
+120 again in a third run at `2900701`.
 
 **The speedups carry over.** Times are 2.5 to 2.9 times lower than on one core and the ratios
 held (100,612 triangles):
@@ -448,7 +457,8 @@ held (100,612 triangles):
 stack of ten previews grew the process 256 MB keeping its solids and 50 MB releasing them. Two
 figures differ from the one-core table in section 4 and are not explained:
 
-- The 120-round prepare-cut-drop run reached 5 solids alive at once, where one core saw 3.
+- The prepare-cut-drop run reached 5 solids alive at once (at 120 rounds in the first run, at
+  both lengths in the third), where one core saw 3. Growth stayed at 48 to 49 MB.
 - Dragging one kept body held 3 solids and grew the process 46 MB, at both 40 and 120 rounds,
   where one core saw 2 solids and 4.1 MB. It does not rise with run length, so it is not a leak,
   but it is eleven times the growth. The rounds themselves were faster (median 38.2 ms, slowest
