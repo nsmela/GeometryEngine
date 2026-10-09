@@ -286,6 +286,7 @@ internal static class SharedIndexes
 internal sealed class SpatialQueries : ISpatialQueries
 {
     private readonly BuildIndexHandler _build = new();
+    private readonly ShortestPathHandler _path = new();
 
     public Result<ISpatialIndex> BuildIndex(IMesh mesh) => _build.Handle(new BuildIndexRequest(mesh));
 
@@ -297,4 +298,7 @@ internal sealed class SpatialQueries : ISpatialQueries
             ? MeshErrors.EmptyOperand
             : Result.Success<ISpatialIndex>(SharedIndexes.For(mesh));
     }
+
+    public Result<ImmutableArray<Vec3>> ShortestPath(IMesh mesh, Vec3 from, Vec3 to) =>
+        _path.Handle(new ShortestPathRequest(mesh, from, to));
 }
