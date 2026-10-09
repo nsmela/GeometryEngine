@@ -575,6 +575,19 @@ public interface ISpatialQueries
     /// keep track of. A moved mesh is a new mesh, with an index of its own.
     /// </summary>
     Result<ISpatialIndex> IndexFor(IMesh mesh);
+
+    /// <summary>
+    /// The shortest way across the surface of <paramref name="mesh"/> from <paramref name="from"/>
+    /// to <paramref name="to"/>, each taken first to the nearest point on it. Comes back as the two
+    /// ends and, between them, every place the path crosses an edge - so the points fall wherever the
+    /// triangulation puts its edges, not at any regular spacing.
+    ///
+    /// The path is the shortest through the band of faces a search joins the two ends by, which on a
+    /// smooth surface is the shortest across it. Fails when the two points are on parts of the
+    /// surface that do not join. What it walks is kept with the mesh, as <see cref="IndexFor"/>'s
+    /// index is, so a run of paths over one surface pays for it once.
+    /// </summary>
+    Result<ImmutableArray<Vec3>> ShortestPath(IMesh mesh, Vec3 from, Vec3 to);
 }
 
 /// <summary>
