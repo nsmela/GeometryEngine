@@ -67,6 +67,86 @@ internal static class MeshCleanup
         return ([.. welder.Vertices], kept);
     }
 
+    /// <summary>
+    /// <see cref="Weld"/>, but only for vertices on a seam - an edge only one triangle uses. Where
+    /// the triangles already close up by index there is nothing to weld, and welding anyway can
+    /// only fuse sheets the mesh holds apart.
+    ///
+    /// Manifold's level-set mesher - every offset - is where that bites. Where the surface touches
+    /// itself it emits the point once per sheet, at exactly the same position, and a weld by
+    /// position turns each such pinch into edges carrying three or four faces. A triangle soup is
+    /// all seams, so it still welds whole.
+    /// </summary>
+    public static (List<Vec3> Vertices, List<int> Triangles) WeldSeams(
+        IReadOnlyList<Vec3> vertices, IReadOnlyList<int> triangles, double tolerance)
+    {
+        var edgeUse = new Dictionary<(int, int), int>();
+        for (var i = 0; i + 2 < triangles.Count; i += 3)
+        {
+            for (var k = 0; k < 3; k++)
+            {
+                var a = triangles[i + k];
+                var b = triangles[i + ((k + 1) % 3)];
+                var key = a < b ? (a, b) : (b, a);
+                edgeUse[key] = edgeUse.GetValueOrDefault(key) + 1;
+            }
+        }
+
+        var onSeam = new bool[vertices.Count];
+        foreach (var ((a, b), uses) in edgeUse)
+        {
+            if (uses == 1)
+            {
+                onSeam[a] = true;
+                onSeam[b] = true;
+            }
+        }
+
+        var welder = new VertexWelder(tolerance);
+        var fromWelder = new Dictionary<int, int>();
+        var kept = new List<Vec3>(vertices.Count);
+        var remap = new int[vertices.Count];
+        for (var i = 0; i < vertices.Count; i++)
+        {
+            if (!onSeam[i])
+            {
+                remap[i] = kept.Count;
+                kept.Add(vertices[i]);
+                continue;
+            }
+
+            var welded = welder.AddOrGet(vertices[i]);
+            if (!fromWelder.TryGetValue(welded, out var index))
+            {
+                index = kept.Count;
+                kept.Add(vertices[i]);
+                fromWelder[welded] = index;
+            }
+
+            remap[i] = index;
+        }
+
+        var result = new List<int>(triangles.Count);
+        for (var i = 0; i + 2 < triangles.Count; i += 3)
+        {
+            var a = remap[triangles[i]];
+            var b = remap[triangles[i + 1]];
+            var c = remap[triangles[i + 2]];
+
+            // As in Weld: a triangle whose corners welded together has no area left.
+            if (a == b || b == c || c == a)
+            {
+                continue;
+            }
+
+            result.Add(a);
+            result.Add(b);
+            result.Add(c);
+        }
+
+        return (kept, result);
+    }
+
     /// <summary>Drops vertices no triangle refers to and renumbers the rest in first-use order.</summary>
     public static (ImmutableArray<Vec3> Vertices, ImmutableArray<int> Triangles) Compact(
         IReadOnlyList<Vec3> vertices, IReadOnlyList<int> triangles)
