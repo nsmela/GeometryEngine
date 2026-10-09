@@ -236,14 +236,24 @@ internal static class PolygonTriangulator
                     continue;
                 }
 
-                // The flipped quad must stay convex, or the swap would fold the pair over.
-                if (Cross(r, p, s) <= 0 || Cross(r, s, q) <= 0)
+                // The flipped quad must stay convex, or the swap would fold the pair over: p and q
+                // on opposite sides of the new diagonal r-s. Either side will do - which one p is
+                // on depends only on which way the edge runs, and the edge is keyed by index, so
+                // asking for one side refused every flip on edges running the other way.
+                var sideP = Cross(r, s, p);
+                var sideQ = Cross(r, s, q);
+                if (sideP * sideQ >= 0)
                 {
                     continue;
                 }
 
-                triangles[owners.First] = (opposite0, edge.Item1, opposite1);
-                triangles[owners.Second] = (opposite1, edge.Item2, opposite0);
+                // Wound to match: counter-clockwise, as every triangle here is.
+                triangles[owners.First] = sideP < 0
+                    ? (opposite0, edge.Item1, opposite1)
+                    : (opposite0, opposite1, edge.Item1);
+                triangles[owners.Second] = sideQ > 0
+                    ? (opposite1, edge.Item2, opposite0)
+                    : (opposite1, opposite0, edge.Item2);
                 touched[owners.First] = true;
                 touched[owners.Second] = true;
                 flipped = true;
@@ -299,12 +309,17 @@ internal static class PolygonTriangulator
         double bx = b.X - d.X, by = b.Y - d.Y;
         double cx = c.X - d.X, cy = c.Y - d.Y;
 
-        var determinant =
-            (((ax * ax) + (ay * ay)) * ((bx * cy) - (cx * by))) -
-            (((bx * bx) + (by * by)) * ((ax * cy) - (cx * ay))) +
-            (((cx * cx) + (cy * cy)) * ((ax * by) - (bx * ay)));
+        var termA = ((ax * ax) + (ay * ay)) * ((bx * cy) - (cx * by));
+        var termB = ((bx * bx) + (by * by)) * ((ax * cy) - (cx * ay));
+        var termC = ((cx * cx) + (cy * cy)) * ((ax * by) - (bx * ay));
 
-        return determinant > 1e-12;
+        // Measured against the size of its own terms rather than a fixed figure, which the
+        // determinant - fourth power in the coordinates - outgrows on anything bigger than a few
+        // units. Four points on one circle are a tie either diagonal satisfies, and read with an
+        // absolute tolerance the rounding in that tie said "flip" one way and then the other: the
+        // edge flipped back and forth every pass, and the triangles it held touched never got a
+        // turn of their own, so a plainly bad edge beside it was left in place.
+        return termA - termB + termC > 1e-10 * (Math.Abs(termA) + Math.Abs(termB) + Math.Abs(termC));
     }
 
     /// <summary>

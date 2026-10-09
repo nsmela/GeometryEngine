@@ -151,6 +151,37 @@ public sealed class PolygonTests
             [Ring(20, 3, 2, -8, 0, clockwise: true), Ring(24, 3, 2.5, 8, 1, clockwise: true)]);
 
         var triangulation = Polygons.Triangulate([polygon]).Value;
+
+        Check.Equal(0, NonDelaunayEdges(triangulation));
+    }
+
+    [Fact]
+    public void A_triangulation_between_two_rings_is_delaunay_throughout()
+    {
+        // A band between two wavy rings, the shape a parting flange is triangulated in. Every quad
+        // here is convex one way round or the other, and half of them used to be refused a flip
+        // for running the wrong way round the edge they share.
+        static ImmutableArray<Vec2> Ring(int n, double radius, double phase) =>
+            [.. Enumerable.Range(0, n).Select(i =>
+            {
+                var angle = (2 * Math.PI * i / n) + phase;
+                var r = radius + (6 * Math.Sin(5 * angle));
+                return new Vec2(r * Math.Cos(angle), r * Math.Sin(angle));
+            })];
+
+        var band = new PlanarPolygon(Ring(140, 50, 0.01), [Ring(110, 40, 0.02)]);
+        var triangulation = Polygons.Triangulate([band]).Value;
+
+        Check.Equal(0, NonDelaunayEdges(triangulation));
+    }
+
+    /// <summary>
+    /// Interior edges a flip could still improve: the far vertex inside the circle through the near
+    /// three, and the quad they make convex - checked both ways round, since an edge can run either
+    /// way along the triangles that share it.
+    /// </summary>
+    private static int NonDelaunayEdges(PlanarTriangulation triangulation)
+    {
         var points = triangulation.Points;
         var corners = triangulation.Triangles;
 
@@ -186,21 +217,22 @@ public sealed class PolygonTests
             var (p, q) = (points[edge.Item1], points[edge.Item2]);
             var (r, s) = (points[Opposite(triangles[0], edge)], points[Opposite(triangles[1], edge)]);
 
-            // s inside the circle through p, q, r - and the quad convex, so a flip was possible.
+            // Relative to its own terms, so four points on one circle within rounding count as the
+            // tie they are rather than as a failure.
             var (a, b, c) = Cross(p, q, r) < 0 ? (p, r, q) : (p, q, r);
             double ax = a.X - s.X, ay = a.Y - s.Y, bx = b.X - s.X, by = b.Y - s.Y, cx = c.X - s.X, cy = c.Y - s.Y;
-            var determinant =
-                (((ax * ax) + (ay * ay)) * ((bx * cy) - (cx * by))) -
-                (((bx * bx) + (by * by)) * ((ax * cy) - (cx * ay))) +
-                (((cx * cx) + (cy * cy)) * ((ax * by) - (bx * ay)));
+            var termA = ((ax * ax) + (ay * ay)) * ((bx * cy) - (cx * by));
+            var termB = ((bx * bx) + (by * by)) * ((ax * cy) - (cx * ay));
+            var termC = ((cx * cx) + (cy * cy)) * ((ax * by) - (bx * ay));
+            var inside = termA - termB + termC > 1e-10 * (Math.Abs(termA) + Math.Abs(termB) + Math.Abs(termC));
 
-            if (determinant > 1e-12 && Cross(r, p, s) > 0 && Cross(r, s, q) > 0)
+            if (inside && Cross(r, s, p) * Cross(r, s, q) < 0)
             {
                 failing++;
             }
         }
 
-        Check.Equal(0, failing);
+        return failing;
     }
 
     [Fact]
