@@ -16,7 +16,7 @@ internal static class MeshDecimator
     public static (ImmutableArray<Vec3> Vertices, ImmutableArray<int> Triangles) Decimate(
         IMesh mesh, int targetTriangleCount, double weldTolerance)
     {
-        var (welded, triangles) = MeshCleanup.Weld(mesh.Vertices, mesh.Triangles, weldTolerance);
+        var (welded, triangles) = MeshCleanup.WeldSeams(mesh.Vertices, mesh.Triangles, weldTolerance);
         var triangleCount = triangles.Count / 3;
 
         if (triangleCount <= targetTriangleCount || targetTriangleCount < 4)
