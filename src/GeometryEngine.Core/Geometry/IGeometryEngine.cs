@@ -102,8 +102,15 @@ public sealed record DrapedPathSpec(
 /// inside, positive outside).
 /// <para>
 /// <paramref name="CellSize"/> is coarsened when the box would otherwise hold more than about
-/// 1.5 million cells. <paramref name="Field"/> is sampled from several threads at once; if it
-/// throws, sampling stops and the generator fails with <c>Manifold.FieldFailed</c>.
+/// 1.5 million cells. <paramref name="Field"/> is sampled from several threads at once, so it
+/// must be safe to call concurrently. If it throws, sampling stops and the generator fails with
+/// <c>Manifold.FieldFailed</c>; if it returns NaN or an infinity, with <c>Manifold.FieldNotFinite</c>.
+/// </para>
+/// <para>
+/// Meshing runs on the native Manifold kernel, so the generator fails with
+/// <c>Manifold.Unavailable</c> wherever that library does not ship (prebuilt for win-x64 only).
+/// A field that never falls below the level inside the bounds fails with
+/// <c>Generators.EmptyLevelSet</c>.
 /// </para>
 /// </summary>
 public sealed record LevelSetSpec(
@@ -324,7 +331,11 @@ public sealed record SurfaceDeviation(
 /// <param name="AlignedMesh">The source mesh after applying the optimal rigid motion.</param>
 /// <param name="Rotation">The net rotation about the origin.</param>
 /// <param name="Translation">The net translation applied after <paramref name="Rotation"/>.</param>
-/// <param name="RootMeanSquareError">Root-mean-square closest-point distance of the aligned mesh to the target surface.</param>
+/// <param name="RootMeanSquareError">
+/// Root-mean-square closest-point distance to the target surface, measured over the points
+/// sampled evenly by area across the aligned source surface - an estimate of the whole surface's
+/// error, not a per-vertex figure.
+/// </param>
 /// <param name="Iterations">How many ICP iterations ran before stopping.</param>
 public sealed record AlignmentResult(
     IMesh AlignedMesh,
@@ -350,6 +361,12 @@ public interface IGeometryTransforms
     /// Closest Point (ICP), returning the moved mesh alongside the composed <see cref="Rotation"/>,
     /// <see cref="Vec3"/> translation, and final RMS surface error.
     /// </summary>
+    /// <remarks>
+    /// ICP starts from the two surfaces' area-weighted centres with no rotation and converges to
+    /// the nearest fit, so a source turned far from the target - or a shape with symmetries - may
+    /// settle on a different pose than the one intended.
+    /// </remarks>
+    /// <param name="maxSamplePoints">How many points are sampled, evenly by area, across the source surface. At least three.</param>
     Result<AlignmentResult> Align(
         IMesh source,
         IMesh target,

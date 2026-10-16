@@ -20,6 +20,9 @@ internal static class GeneratorErrors
 
     public static readonly Error NonFiniteParameter =
         new("Generators.NonFiniteParameter", "A generator parameter is NaN or infinite.");
+
+    public static readonly Error EmptyLevelSet =
+        new("Generators.EmptyLevelSet", "The field does not fall below the level anywhere inside the bounds.");
 }
 
 /// <summary>
@@ -268,13 +271,19 @@ internal sealed class LevelSetHandler
             string.IsNullOrWhiteSpace(spec.Name) ? "level-set" : spec.Name,
             "GeometryEngine.Generators.LevelSet");
 
-        return Internal.Native.ManifoldKernel.LevelSet(
+        var mesh = Internal.Native.ManifoldKernel.LevelSet(
             spec.Field,
             spec.BoundsMin,
             spec.BoundsMax,
             cell,
             spec.Level,
             metadata);
+
+        // Nothing came out because nothing in the box lies below the level - the caller's field,
+        // not the kernel, is the thing to look at.
+        return mesh.IsFailure && mesh.Error == Internal.Native.ManifoldErrors.EmptyResult
+            ? GeneratorErrors.EmptyLevelSet
+            : mesh;
     }
 }
 

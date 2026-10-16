@@ -13,7 +13,7 @@ internal static class TransformErrors
 
     public static readonly Error InvalidAlignmentParameters = new(
         "Transforms.InvalidAlignmentParameters",
-        "Alignment needs a positive sample count, a non-negative iteration limit, and a positive tolerance.");
+        "Alignment needs at least three sample points, a non-negative iteration limit, and a positive tolerance.");
 }
 
 /// <summary>
@@ -144,11 +144,14 @@ public sealed record AlignRequest(
     int MaxSamplePoints = 2000);
 
 /// <summary>
-/// Rigid Iterative Closest Point (ICP) registration using Horn's unit-quaternion absolute
-/// orientation solver against the target mesh's shared spatial index.
+/// Rigid Iterative Closest Point (ICP) registration, point-to-plane, against the target mesh's
+/// shared spatial index.
 /// </summary>
 internal sealed class AlignHandler
 {
+    /// <summary>The share of closest-point pairs, nearest first, each step fits to.</summary>
+    private const double InlierFraction = 0.9;
+
     public Result<AlignmentResult> Handle(AlignRequest request)
     {
         ArgumentNullException.ThrowIfNull(request.Source);
@@ -168,27 +171,28 @@ internal sealed class AlignHandler
         var target = request.Target;
         var targetIndex = Spatial.SharedIndexes.For(target).Inner;
 
-        // Deterministic stride sampling across the source vertices.
-        var sampleCount = Math.Min(source.VertexCount, request.MaxSamplePoints);
-        var originalSamples = new Vec3[sampleCount];
-        for (var i = 0; i < sampleCount; i++)
-        {
-            var idx = (int)((long)i * source.VertexCount / sampleCount);
-            originalSamples[i] = source.Vertices[idx];
-        }
+        // Points spread evenly by area across the source surface, not its vertices: a coarse
+        // mesh - a box has eight corners - would otherwise give ICP almost nothing to hold on to,
+        // and a dense patch would outvote the rest of the shape.
+        var sampleCount = request.MaxSamplePoints;
+        var originalSamples = SampleSurface(source, sampleCount);
 
-        // Start from centroid translation so disjoint meshes begin overlapping.
-        var sourceCentroid = CentroidOf(originalSamples);
-        var targetCentroid = CentroidOf(target.Vertices);
-
+        // Start from centroid translation so disjoint meshes begin overlapping. Area-weighted, so
+        // the start does not lean towards wherever either mesh happens to be finely tessellated.
         var totalRotation = Rotation.Identity;
-        var totalTranslation = targetCentroid - sourceCentroid;
+        var totalTranslation = SurfaceCentroid(target) - SurfaceCentroid(source);
 
         var transformedSamples = new Vec3[sampleCount];
         for (var i = 0; i < sampleCount; i++)
         {
             transformedSamples[i] = originalSamples[i] + totalTranslation;
         }
+
+        // Reused across iterations.
+        var distances = new double[sampleCount];
+        var inlierSources = new Vec3[sampleCount];
+        var inlierTargets = new Vec3[sampleCount];
+        var inlierNormals = new Vec3[sampleCount];
 
         var previousRmse = double.MaxValue;
         var iterationsRun = 0;
@@ -198,36 +202,38 @@ internal sealed class AlignHandler
             iterationsRun = iter + 1;
             var closest = targetIndex.ClosestPoints(transformedSamples);
 
-            // Compute median distance for robust outlier rejection (keep pairs within 3x median).
-            var distances = new double[sampleCount];
+            // Trimmed ICP: the farthest tenth of the pairs are taken as outliers. A cut tied to the
+            // median instead collapses as the fit closes - most samples land on the target, the
+            // median goes to zero, and the few pairs still carrying the correction are thrown out.
+            var squaredErrorSum = 0.0;
             for (var i = 0; i < sampleCount; i++)
             {
                 distances[i] = closest[i].Distance;
-            }
-
-            Array.Sort(distances);
-            var median = distances[sampleCount / 2];
-            var maxInlierDistance = median > 1e-9 ? median * 3.0 : double.MaxValue;
-
-            var pSum = Vec3.Zero;
-            var qSum = Vec3.Zero;
-            var inlierCount = 0;
-            var squaredErrorSum = 0.0;
-
-            for (var i = 0; i < sampleCount; i++)
-            {
-                var d = closest[i].Distance;
-                squaredErrorSum += d * d;
-
-                if (d <= maxInlierDistance)
-                {
-                    pSum += transformedSamples[i];
-                    qSum += closest[i].Point;
-                    inlierCount++;
-                }
+                squaredErrorSum += distances[i] * distances[i];
             }
 
             var currentRmse = Math.Sqrt(squaredErrorSum / sampleCount);
+
+            Array.Sort(distances);
+
+            // Never fewer than three pairs, or a small sample count would trim itself to nothing.
+            var kept = Math.Max(3, (int)Math.Ceiling(sampleCount * InlierFraction));
+            var maxInlierDistance = distances[kept - 1];
+
+            var pSum = Vec3.Zero;
+            var inlierCount = 0;
+
+            for (var i = 0; i < sampleCount; i++)
+            {
+                if (closest[i].Distance <= maxInlierDistance)
+                {
+                    inlierSources[inlierCount] = transformedSamples[i];
+                    inlierTargets[inlierCount] = closest[i].Point;
+                    inlierNormals[inlierCount] = closest[i].Normal;
+                    pSum += transformedSamples[i];
+                    inlierCount++;
+                }
+            }
 
             if (inlierCount < 3)
             {
@@ -235,38 +241,7 @@ internal sealed class AlignHandler
             }
 
             var pMean = pSum / inlierCount;
-            var qMean = qSum / inlierCount;
-
-            // Cross-covariance matrix S = sum (p_i - pMean) * (q_i - qMean)^T
-            double sxx = 0, sxy = 0, sxz = 0;
-            double syx = 0, syy = 0, syz = 0;
-            double szx = 0, szy = 0, szz = 0;
-
-            for (var i = 0; i < sampleCount; i++)
-            {
-                if (closest[i].Distance > maxInlierDistance)
-                {
-                    continue;
-                }
-
-                var dp = transformedSamples[i] - pMean;
-                var dq = closest[i].Point - qMean;
-
-                sxx += dp.X * dq.X;
-                sxy += dp.X * dq.Y;
-                sxz += dp.X * dq.Z;
-
-                syx += dp.Y * dq.X;
-                syy += dp.Y * dq.Y;
-                syz += dp.Y * dq.Z;
-
-                szx += dp.Z * dq.X;
-                szy += dp.Z * dq.Y;
-                szz += dp.Z * dq.Z;
-            }
-
-            var stepRotation = OptimalRotationHorn(sxx, sxy, sxz, syx, syy, syz, szx, szy, szz);
-            var stepTranslation = qMean - stepRotation.Apply(pMean);
+            var (stepRotation, stepTranslation) = PointToPlaneStep(inlierSources, inlierTargets, inlierNormals, inlierCount, pMean);
 
             // Compose rigid transform: p' = R_step * (R_total * p + t_total) + t_step
             totalRotation = totalRotation.Then(stepRotation);
@@ -311,136 +286,207 @@ internal sealed class AlignHandler
                 iterationsRun));
     }
 
-    private static Vec3 CentroidOf(IReadOnlyList<Vec3> points)
+    /// <summary>
+    /// <paramref name="count"/> points spread across the surface in proportion to area: each lands
+    /// in the triangle its share of the running area falls in, at a low-discrepancy position
+    /// inside it, so the same mesh always yields the same points. A surface with no area at all
+    /// falls back to triangle corners.
+    /// </summary>
+    private static Vec3[] SampleSurface(IMesh mesh, int count)
     {
-        var sum = Vec3.Zero;
-        for (var i = 0; i < points.Count; i++)
+        var triangleCount = mesh.TriangleCount;
+        var cumulative = new double[triangleCount];
+        var total = 0.0;
+        for (var t = 0; t < triangleCount; t++)
         {
-            sum += points[i];
+            var (a, b, c) = mesh.TriangleAt(t);
+            total += (b - a).Cross(c - a).Length / 2;
+            cumulative[t] = total;
         }
 
-        return sum / points.Count;
+        var samples = new Vec3[count];
+        if (!(total > 0) || !double.IsFinite(total))
+        {
+            for (var i = 0; i < count; i++)
+            {
+                samples[i] = mesh.TriangleAt(i % triangleCount).A;
+            }
+
+            return samples;
+        }
+
+        // The R2 sequence: the plastic number's powers give the most even 2D spread an
+        // additive recurrence can.
+        const double alpha1 = 0.7548776662466927;
+        const double alpha2 = 0.5698402909980532;
+
+        for (var i = 0; i < count; i++)
+        {
+            var share = (i + 0.5) / count * total;
+            var t = Array.BinarySearch(cumulative, share);
+            t = t >= 0 ? t : Math.Min(~t, triangleCount - 1);
+
+            var u = (0.5 + (i * alpha1)) % 1;
+            var v = (0.5 + (i * alpha2)) % 1;
+            if (u + v > 1)
+            {
+                (u, v) = (1 - u, 1 - v);
+            }
+
+            var (a, b, c) = mesh.TriangleAt(t);
+            samples[i] = a + ((b - a) * u) + ((c - a) * v);
+        }
+
+        return samples;
+    }
+
+    /// <summary>The area-weighted centre of the surface; the mean of the triangle corners where it has no area.</summary>
+    private static Vec3 SurfaceCentroid(IMesh mesh)
+    {
+        var weighted = Vec3.Zero;
+        var corners = Vec3.Zero;
+        var total = 0.0;
+        for (var t = 0; t < mesh.TriangleCount; t++)
+        {
+            var (a, b, c) = mesh.TriangleAt(t);
+            var area = (b - a).Cross(c - a).Length / 2;
+            var centre = (a + b + c) / 3;
+            weighted += centre * area;
+            corners += centre;
+            total += area;
+        }
+
+        return total > 0 && double.IsFinite(total)
+            ? weighted / total
+            : corners / mesh.TriangleCount;
     }
 
     /// <summary>
-    /// Horn's closed-form quaternion solver: builds the symmetric 4x4 Davenport matrix N from the
-    /// cross-covariance matrix S and extracts the eigenvector of its largest eigenvalue via Jacobi
-    /// diagonalization.
+    /// One point-to-plane step: the small rigid motion minimising the summed squared distance of
+    /// each source point to the tangent plane at its closest target point. Point-to-point fitting
+    /// lets samples slide along flat faces and takes hundreds of steps to settle on a machined
+    /// shape; measuring along the normal does not, and settles in a handful.
     /// </summary>
-    private static Rotation OptimalRotationHorn(
-        double sxx, double sxy, double sxz,
-        double syx, double syy, double syz,
-        double szx, double szy, double szz)
+    /// <remarks>
+    /// Linearised about <paramref name="centre"/> - (R p + t) is taken as p + w x p + t there - so
+    /// the 6x6 normal equations stay well scaled wherever the meshes sit. A direction the surface
+    /// does not pin (a sphere's spin, a plate's in-plane slide) is held still by a small ridge
+    /// term rather than left to round-off.
+    /// </remarks>
+    private static (Rotation Rotation, Vec3 Translation) PointToPlaneStep(
+        Vec3[] sources, Vec3[] targets, Vec3[] normals, int count, Vec3 centre)
     {
-        double[,] a = new double[4, 4];
-        a[0, 0] = sxx + syy + szz;
-        a[0, 1] = syz - szy;
-        a[0, 2] = szx - sxz;
-        a[0, 3] = sxy - syx;
+        var ata = new double[6, 6];
+        var atb = new double[6];
+        Span<double> row = stackalloc double[6];
 
-        a[1, 0] = a[0, 1];
-        a[1, 1] = sxx - syy - szz;
-        a[1, 2] = sxy + syx;
-        a[1, 3] = szx + sxz;
-
-        a[2, 0] = a[0, 2];
-        a[2, 1] = a[1, 2];
-        a[2, 2] = -sxx + syy - szz;
-        a[2, 3] = syz + szy;
-
-        a[3, 0] = a[0, 3];
-        a[3, 1] = a[1, 3];
-        a[3, 2] = a[2, 3];
-        a[3, 3] = -sxx - syy + szz;
-
-        double[,] v = new double[4, 4];
-        for (var i = 0; i < 4; i++)
+        for (var i = 0; i < count; i++)
         {
-            v[i, i] = 1.0;
-        }
+            var n = normals[i];
+            var c = (sources[i] - centre).Cross(n);
+            row[0] = c.X;
+            row[1] = c.Y;
+            row[2] = c.Z;
+            row[3] = n.X;
+            row[4] = n.Y;
+            row[5] = n.Z;
 
-        // Exact Jacobi sweeps for a 4x4 symmetric matrix.
-        for (var sweep = 0; sweep < 15; sweep++)
-        {
-            var offDiagonal = 0.0;
-            for (var p = 0; p < 3; p++)
+            var b = (targets[i] - sources[i]).Dot(n);
+            for (var j = 0; j < 6; j++)
             {
-                for (var q = p + 1; q < 4; q++)
+                atb[j] += row[j] * b;
+                for (var k = 0; k < 6; k++)
                 {
-                    offDiagonal += Math.Abs(a[p, q]);
-                }
-            }
-
-            if (offDiagonal < 1e-15)
-            {
-                break;
-            }
-
-            for (var p = 0; p < 3; p++)
-            {
-                for (var q = p + 1; q < 4; q++)
-                {
-                    var apq = a[p, q];
-                    if (Math.Abs(apq) < 1e-15)
-                    {
-                        continue;
-                    }
-
-                    var tau = (a[q, q] - a[p, p]) / (2.0 * apq);
-                    var t = tau >= 0
-                        ? 1.0 / (tau + Math.Sqrt(1.0 + (tau * tau)))
-                        : -1.0 / (-tau + Math.Sqrt(1.0 + (tau * tau)));
-
-                    var c = 1.0 / Math.Sqrt(1.0 + (t * t));
-                    var s = t * c;
-
-                    a[p, p] -= t * apq;
-                    a[q, q] += t * apq;
-                    a[p, q] = 0.0;
-                    a[q, p] = 0.0;
-
-                    for (var r = 0; r < 4; r++)
-                    {
-                        if (r != p && r != q)
-                        {
-                            var arp = a[r, p];
-                            var arq = a[r, q];
-                            a[r, p] = a[p, r] = (c * arp) - (s * arq);
-                            a[r, q] = a[q, r] = (s * arp) + (c * arq);
-                        }
-
-                        var vrp = v[r, p];
-                        var vrq = v[r, q];
-                        v[r, p] = (c * vrp) - (s * vrq);
-                        v[r, q] = (s * vrp) + (c * vrq);
-                    }
+                    ata[j, k] += row[j] * row[k];
                 }
             }
         }
 
-        var maxCol = 0;
-        for (var i = 1; i < 4; i++)
+        var trace = 0.0;
+        for (var j = 0; j < 6; j++)
         {
-            if (a[i, i] > a[maxCol, maxCol])
+            trace += ata[j, j];
+        }
+
+        var ridge = (1e-9 * trace / 6) + double.Epsilon;
+        for (var j = 0; j < 6; j++)
+        {
+            ata[j, j] += ridge;
+        }
+
+        var x = SolveSymmetric6(ata, atb);
+        var spin = new Vec3(x[0], x[1], x[2]);
+        var angle = spin.Length;
+        var rotation = angle > 1e-15 && Direction.From(spin) is { HasValue: true } axis
+            ? Rotation.FromAxisAngle(axis.Value, angle)
+            : Rotation.Identity;
+
+        // The fit turned the points about the centre; as a motion about the origin that is the
+        // same turn followed by the centre's own displacement.
+        var translation = centre + new Vec3(x[3], x[4], x[5]) - rotation.Apply(centre);
+        return (rotation, translation);
+    }
+
+    /// <summary>Gaussian elimination with partial pivoting; a pivot that vanishes leaves its unknown at zero.</summary>
+    private static double[] SolveSymmetric6(double[,] a, double[] b)
+    {
+        const int n = 6;
+        var x = new double[n];
+        for (var col = 0; col < n; col++)
+        {
+            var pivot = col;
+            for (var r = col + 1; r < n; r++)
             {
-                maxCol = i;
+                if (Math.Abs(a[r, col]) > Math.Abs(a[pivot, col]))
+                {
+                    pivot = r;
+                }
+            }
+
+            if (pivot != col)
+            {
+                for (var k = 0; k < n; k++)
+                {
+                    (a[col, k], a[pivot, k]) = (a[pivot, k], a[col, k]);
+                }
+
+                (b[col], b[pivot]) = (b[pivot], b[col]);
+            }
+
+            if (Math.Abs(a[col, col]) < 1e-300)
+            {
+                continue;
+            }
+
+            for (var r = col + 1; r < n; r++)
+            {
+                var factor = a[r, col] / a[col, col];
+                for (var k = col; k < n; k++)
+                {
+                    a[r, k] -= factor * a[col, k];
+                }
+
+                b[r] -= factor * b[col];
             }
         }
 
-        var qw = v[0, maxCol];
-        var qx = v[1, maxCol];
-        var qy = v[2, maxCol];
-        var qz = v[3, maxCol];
-        if (qw < 0)
+        for (var r = n - 1; r >= 0; r--)
         {
-            qw = -qw;
-            qx = -qx;
-            qy = -qy;
-            qz = -qz;
+            if (Math.Abs(a[r, r]) < 1e-300)
+            {
+                continue;
+            }
+
+            var sum = b[r];
+            for (var k = r + 1; k < n; k++)
+            {
+                sum -= a[r, k] * x[k];
+            }
+
+            x[r] = sum / a[r, r];
         }
 
-        var rotation = Rotation.FromQuaternion(qw, qx, qy, qz);
-        return rotation.HasValue ? rotation.Value : Rotation.Identity;
+        return x;
     }
 }
 

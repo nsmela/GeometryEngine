@@ -217,4 +217,34 @@ public sealed class GeneratorTests
         Check.Equal("Manifold.FieldFailed", mesh.Error.Code);
         Check.True(mesh.Error.Description.Contains("field broke", StringComparison.Ordinal));
     }
+
+    [Fact]
+    public void A_level_set_whose_field_returns_nan_is_refused()
+    {
+        var spec = new LevelSetSpec(
+            Field: p => p.X > 1 ? double.NaN : p.Length - 2,
+            BoundsMin: new Vec3(-3, -3, -3),
+            BoundsMax: new Vec3(3, 3, 3),
+            CellSize: 0.25);
+
+        var mesh = Fixtures.Engine.Generators.GenerateLevelSet(spec);
+
+        Check.True(mesh.IsFailure);
+        Check.Equal("Manifold.FieldNotFinite", mesh.Error.Code);
+    }
+
+    [Fact]
+    public void A_level_set_whose_field_never_falls_below_the_level_is_refused()
+    {
+        var spec = new LevelSetSpec(
+            Field: p => p.Length + 1,
+            BoundsMin: new Vec3(-3, -3, -3),
+            BoundsMax: new Vec3(3, 3, 3),
+            CellSize: 0.25);
+
+        var mesh = Fixtures.Engine.Generators.GenerateLevelSet(spec);
+
+        Check.True(mesh.IsFailure);
+        Check.Equal("Generators.EmptyLevelSet", mesh.Error.Code);
+    }
 }

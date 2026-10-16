@@ -344,10 +344,11 @@ internal static unsafe class ManifoldKernel
         Guarded(() =>
         {
             // An exception cannot unwind through Manifold's native frames - letting one escape the
-            // callback takes the whole process down. The first one is held here instead, every
-            // later sample is answered with a constant so the native pass finishes quickly, and
-            // the call fails once Manifold hands control back.
-            Exception? fault = null;
+            // callback takes the whole process down - and a NaN or infinite sample interpolates
+            // into vertices that are not anywhere. The first such fault is held here instead,
+            // every later sample is answered with a constant so the native pass finishes quickly,
+            // and the call fails once Manifold hands control back.
+            FieldFault? fault = null;
 
             // Manifold keeps the region where the field is above the level, so the field is
             // handed over negated: positive inside the solid.
@@ -358,13 +359,21 @@ internal static unsafe class ManifoldKernel
                     return 0;
                 }
 
+                var point = new Vec3(x, y, z);
                 try
                 {
-                    return -signedDistance(new Vec3(x, y, z));
+                    var value = signedDistance(point);
+                    if (double.IsFinite(value))
+                    {
+                        return -value;
+                    }
+
+                    Interlocked.CompareExchange(ref fault, new FieldFault(ManifoldErrors.FieldNotFinite(point, value)), null);
+                    return 0;
                 }
                 catch (Exception exception)
                 {
-                    Interlocked.CompareExchange(ref fault, exception, null);
+                    Interlocked.CompareExchange(ref fault, new FieldFault(ManifoldErrors.FieldFailed(exception)), null);
                     return 0;
                 }
             };
@@ -384,7 +393,7 @@ internal static unsafe class ManifoldKernel
 
                 if (fault is not null)
                 {
-                    return Result.Failure<IMesh>(ManifoldErrors.FieldFailed(fault));
+                    return Result.Failure<IMesh>(fault.Error);
                 }
 
                 var status = ManifoldNative.manifold_status(solid);
@@ -526,6 +535,9 @@ internal static unsafe class ManifoldKernel
     }
 
     private delegate IntPtr NativeBooleanOp(IntPtr mem, IntPtr a, IntPtr b);
+
+    /// <summary>The first thing to go wrong while a level set sampled its field, held for after the native call.</summary>
+    private sealed record FieldFault(Error Error);
 
     private static Result<ManifoldOutcome> RunOperation(
         IMesh left,
@@ -881,6 +893,10 @@ internal static class ManifoldErrors
     public static Error FieldFailed(Exception exception) => new(
         "Manifold.FieldFailed",
         $"The scalar field threw while being sampled: {exception.GetType().Name}: {exception.Message}");
+
+    public static Error FieldNotFinite(Vec3 point, double value) => new(
+        "Manifold.FieldNotFinite",
+        $"The scalar field returned {value} at {point}; every sample must be a finite number.");
 
     public static Error UnexpectedLayout(string detail) => new(
         "Manifold.UnexpectedLayout",
