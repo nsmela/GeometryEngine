@@ -100,6 +100,11 @@ public sealed record DrapedPathSpec(
 /// <paramref name="Field"/> crosses <paramref name="Level"/>. The region where the field is below
 /// the level is kept as the solid's interior, matching the signed-distance convention (negative
 /// inside, positive outside).
+/// <para>
+/// <paramref name="CellSize"/> is coarsened when the box would otherwise hold more than about
+/// 1.5 million cells. <paramref name="Field"/> is sampled from several threads at once; if it
+/// throws, sampling stops and the generator fails with <c>Manifold.FieldFailed</c>.
+/// </para>
 /// </summary>
 public sealed record LevelSetSpec(
     Func<Vec3, double> Field,

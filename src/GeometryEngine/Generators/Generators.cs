@@ -227,6 +227,13 @@ public sealed record LevelSetRequest(LevelSetSpec Spec);
 
 internal sealed class LevelSetHandler
 {
+    /// <summary>
+    /// Ceiling on the cells sampled, whatever cell size is asked for. Every cell costs a call into
+    /// the caller's field through the native boundary, so a fine cell on a large box would
+    /// otherwise ask for billions of them. The same ceiling the smoothing pass puts on its grid.
+    /// </summary>
+    internal const double CellBudget = 1_500_000;
+
     public Result<IMesh> Handle(LevelSetRequest request)
     {
         ArgumentNullException.ThrowIfNull(request.Spec);
@@ -249,6 +256,14 @@ internal sealed class LevelSetHandler
             return GeneratorErrors.NonPositiveCellSize;
         }
 
+        // Coarsen rather than let a fine cell run the sample count away.
+        var cell = spec.CellSize;
+        var cells = size.X * size.Y * size.Z / Math.Pow(cell, 3);
+        if (cells > CellBudget)
+        {
+            cell *= Math.Cbrt(cells / CellBudget);
+        }
+
         var metadata = new MeshMetadata(
             string.IsNullOrWhiteSpace(spec.Name) ? "level-set" : spec.Name,
             "GeometryEngine.Generators.LevelSet");
@@ -257,7 +272,7 @@ internal sealed class LevelSetHandler
             spec.Field,
             spec.BoundsMin,
             spec.BoundsMax,
-            spec.CellSize,
+            cell,
             spec.Level,
             metadata);
     }
