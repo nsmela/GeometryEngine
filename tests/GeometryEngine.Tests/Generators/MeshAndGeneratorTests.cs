@@ -144,4 +144,107 @@ public sealed class GeneratorTests
         Check.True(cylinder.IsFailure);
         Check.Equal("Generators.TooFewSegments", cylinder.Error.Code);
     }
+
+    [Fact]
+    public void A_level_set_sphere_is_watertight_and_matches_its_volume()
+    {
+        var radius = 2.0;
+        var spec = new LevelSetSpec(
+            Field: p => p.Length - radius,
+            BoundsMin: new Vec3(-3, -3, -3),
+            BoundsMax: new Vec3(3, 3, 3),
+            CellSize: 0.25,
+            Level: 0,
+            Name: "sdf-sphere");
+
+        var mesh = Fixtures.Engine.Generators.GenerateLevelSet(spec);
+
+        Check.True(mesh.IsSuccess);
+        Check.Equal("sdf-sphere", mesh.Value.Metadata.Name);
+        Check.True(Fixtures.TopologyOf(mesh.Value).IsWatertight);
+        Check.RelativelyClose(Fixtures.SphereVolume(radius), Fixtures.VolumeOf(mesh.Value), 0.02);
+    }
+
+    [Fact]
+    public void A_level_set_with_a_non_positive_cell_size_is_refused()
+    {
+        var spec = new LevelSetSpec(
+            Field: p => p.Length - 1,
+            BoundsMin: new Vec3(-2, -2, -2),
+            BoundsMax: new Vec3(2, 2, 2),
+            CellSize: 0);
+
+        var mesh = Fixtures.Engine.Generators.GenerateLevelSet(spec);
+
+        Check.True(mesh.IsFailure);
+        Check.Equal("Generators.NonPositiveCellSize", mesh.Error.Code);
+    }
+
+    [Fact]
+    public void A_level_set_with_a_tiny_cell_size_is_coarsened_to_the_cell_budget()
+    {
+        // Taken at its word, this cell would ask for about 2e14 samples.
+        long samples = 0;
+        var spec = new LevelSetSpec(
+            Field: p =>
+            {
+                Interlocked.Increment(ref samples);
+                return p.Length - 2;
+            },
+            BoundsMin: new Vec3(-3, -3, -3),
+            BoundsMax: new Vec3(3, 3, 3),
+            CellSize: 1e-4);
+
+        var mesh = Fixtures.Engine.Generators.GenerateLevelSet(spec);
+
+        Check.True(mesh.IsSuccess);
+        Check.True(Fixtures.TopologyOf(mesh.Value).IsWatertight);
+        Check.LessOrEqual(Interlocked.Read(ref samples), 10 * global::GeometryEngine.Generators.LevelSetHandler.CellBudget);
+    }
+
+    [Fact]
+    public void A_level_set_whose_field_throws_fails_instead_of_crashing()
+    {
+        var spec = new LevelSetSpec(
+            Field: p => p.X > 1 ? throw new InvalidOperationException("field broke") : p.Length - 2,
+            BoundsMin: new Vec3(-3, -3, -3),
+            BoundsMax: new Vec3(3, 3, 3),
+            CellSize: 0.25);
+
+        var mesh = Fixtures.Engine.Generators.GenerateLevelSet(spec);
+
+        Check.True(mesh.IsFailure);
+        Check.Equal("Manifold.FieldFailed", mesh.Error.Code);
+        Check.True(mesh.Error.Description.Contains("field broke", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void A_level_set_whose_field_returns_nan_is_refused()
+    {
+        var spec = new LevelSetSpec(
+            Field: p => p.X > 1 ? double.NaN : p.Length - 2,
+            BoundsMin: new Vec3(-3, -3, -3),
+            BoundsMax: new Vec3(3, 3, 3),
+            CellSize: 0.25);
+
+        var mesh = Fixtures.Engine.Generators.GenerateLevelSet(spec);
+
+        Check.True(mesh.IsFailure);
+        Check.Equal("Manifold.FieldNotFinite", mesh.Error.Code);
+    }
+
+    [Fact]
+    public void A_level_set_whose_field_never_falls_below_the_level_is_refused()
+    {
+        var spec = new LevelSetSpec(
+            Field: p => p.Length + 1,
+            BoundsMin: new Vec3(-3, -3, -3),
+            BoundsMax: new Vec3(3, 3, 3),
+            CellSize: 0.25);
+
+        var mesh = Fixtures.Engine.Generators.GenerateLevelSet(spec);
+
+        Check.True(mesh.IsFailure);
+        Check.Equal("Generators.EmptyLevelSet", mesh.Error.Code);
+    }
 }

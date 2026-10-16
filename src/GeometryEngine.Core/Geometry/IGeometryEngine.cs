@@ -95,6 +95,32 @@ public sealed record DrapedPathSpec(
     double TopHeight,
     Maybe<IMesh> Surface = default);
 
+/// <summary>
+/// A scalar field over an axis-aligned box, to be meshed at the surface where
+/// <paramref name="Field"/> crosses <paramref name="Level"/>. The region where the field is below
+/// the level is kept as the solid's interior, matching the signed-distance convention (negative
+/// inside, positive outside).
+/// <para>
+/// <paramref name="CellSize"/> is coarsened when the box would otherwise hold more than about
+/// 1.5 million cells. <paramref name="Field"/> is sampled from several threads at once, so it
+/// must be safe to call concurrently. If it throws, sampling stops and the generator fails with
+/// <c>Manifold.FieldFailed</c>; if it returns NaN or an infinity, with <c>Manifold.FieldNotFinite</c>.
+/// </para>
+/// <para>
+/// Meshing runs on the native Manifold kernel, so the generator fails with
+/// <c>Manifold.Unavailable</c> wherever that library does not ship (prebuilt for win-x64 only).
+/// A field that never falls below the level inside the bounds fails with
+/// <c>Generators.EmptyLevelSet</c>.
+/// </para>
+/// </summary>
+public sealed record LevelSetSpec(
+    Func<Vec3, double> Field,
+    Vec3 BoundsMin,
+    Vec3 BoundsMax,
+    double CellSize,
+    double Level = 0,
+    string Name = "level-set");
+
 /// <summary>Procedural mesh generation.</summary>
 public interface IGeometryGenerators
 {
@@ -126,6 +152,12 @@ public interface IGeometryGenerators
 
     /// <summary>A closed solid following a path across a surface. See <see cref="DrapedPathSpec"/>.</summary>
     Result<IMesh> GenerateDrapedPath(DrapedPathSpec spec);
+
+    /// <summary>
+    /// Meshes the isosurface of a scalar field over a bounding box where the field crosses
+    /// <see cref="LevelSetSpec.Level"/>, keeping the region where the field lies below the level.
+    /// </summary>
+    Result<IMesh> GenerateLevelSet(LevelSetSpec spec);
 }
 
 /// <summary>Aggregate measurements of a mesh.</summary>
@@ -291,6 +323,27 @@ public sealed record SurfaceDeviation(
     double MeanAbsolute,
     double RootMeanSquare);
 
+/// <summary>
+/// The outcome of rigid Iterative Closest Point (ICP) registration of a source mesh onto a
+/// target reference mesh. The rigid motion maps a source point <c>p</c> to
+/// <c>Rotation.Apply(p) + Translation</c>.
+/// </summary>
+/// <param name="AlignedMesh">The source mesh after applying the optimal rigid motion.</param>
+/// <param name="Rotation">The net rotation about the origin.</param>
+/// <param name="Translation">The net translation applied after <paramref name="Rotation"/>.</param>
+/// <param name="RootMeanSquareError">
+/// Root-mean-square closest-point distance to the target surface, measured over the points
+/// sampled evenly by area across the aligned source surface - an estimate of the whole surface's
+/// error, not a per-vertex figure.
+/// </param>
+/// <param name="Iterations">How many ICP iterations ran before stopping.</param>
+public sealed record AlignmentResult(
+    IMesh AlignedMesh,
+    Rotation Rotation,
+    Vec3 Translation,
+    double RootMeanSquareError,
+    int Iterations);
+
 /// <summary>Transformations. Every method returns a new mesh.</summary>
 public interface IGeometryTransforms
 {
@@ -302,6 +355,24 @@ public interface IGeometryTransforms
 
     /// <summary>Turns a mesh about the origin. For a rotation already held as a quaternion, or composed from several.</summary>
     Result<IMesh> Rotate(IMesh mesh, Rotation rotation);
+
+    /// <summary>
+    /// Aligns <paramref name="source"/> rigidly onto <paramref name="target"/> using Iterative
+    /// Closest Point (ICP), returning the moved mesh alongside the composed <see cref="Rotation"/>,
+    /// <see cref="Vec3"/> translation, and final RMS surface error.
+    /// </summary>
+    /// <remarks>
+    /// ICP starts from the two surfaces' area-weighted centres with no rotation and converges to
+    /// the nearest fit, so a source turned far from the target - or a shape with symmetries - may
+    /// settle on a different pose than the one intended.
+    /// </remarks>
+    /// <param name="maxSamplePoints">How many points are sampled, evenly by area, across the source surface. At least three.</param>
+    Result<AlignmentResult> Align(
+        IMesh source,
+        IMesh target,
+        int maxIterations = 50,
+        double tolerance = 1e-5,
+        int maxSamplePoints = 2000);
 }
 
 /// <summary>The mesh file formats the IO slices read and write.</summary>

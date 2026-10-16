@@ -128,4 +128,73 @@ public sealed class TransformTests
         Check.True(scaled.IsFailure);
         Check.Equal("Transforms.MirroringScale", scaled.Error.Code);
     }
+
+    [Fact]
+    public void Alignment_recovers_a_translated_and_rotated_mesh()
+    {
+        // A slab with a block on one corner: no rotation maps it onto itself, so there is one
+        // right answer to recover, and its handful of vertices leaves the sampling to the faces.
+        var target = Fixtures.Engine.Booleans.Union(
+            Fixtures.Box(new Vec3(-2, -1, -0.5), new Vec3(2, 1, 0.5)),
+            Fixtures.Box(new Vec3(1.2, 0.4, 0.5), new Vec3(2, 1, 1.3))).Value;
+        var axis = Direction.From(new Vec3(1, 2, 3)).Value;
+        var rotated = Fixtures.Engine.Transforms.Rotate(target, axis, 0.25).Value;
+        var displaced = Fixtures.Engine.Transforms.Translate(rotated, new Vec3(12, -7, 4)).Value;
+
+        // The defaults: a machined shape like this should settle well inside them.
+        var aligned = Fixtures.Engine.Transforms.Align(displaced, target);
+
+        Check.True(aligned.IsSuccess);
+        var result = aligned.Value;
+        Check.Less(result.RootMeanSquareError, 1e-6);
+        Check.Less(result.Iterations, 20);
+
+        // The reported motion is the one that undoes the displacement, and the one that was
+        // applied to make the aligned mesh.
+        for (var i = 0; i < target.VertexCount; i++)
+        {
+            var moved = result.Rotation.Apply(displaced.Vertices[i]) + result.Translation;
+            Check.Less(moved.DistanceTo(target.Vertices[i]), 1e-6);
+            Check.Less(moved.DistanceTo(result.AlignedMesh.Vertices[i]), 1e-9);
+        }
+    }
+
+    [Fact]
+    public void Alignment_centres_a_differently_tessellated_copy_without_spinning_it()
+    {
+        // A sphere pins no rotation, and the two meshes share no vertices: the start must not
+        // lean towards the denser one, and the free spin must stay put rather than wander.
+        var target = Fixtures.Sphere(Vec3.Zero, 3, 16);
+        var source = Fixtures.Sphere(new Vec3(5, -2, 1), 3, 48);
+
+        var aligned = Fixtures.Engine.Transforms.Align(source, target);
+
+        Check.True(aligned.IsSuccess);
+        var result = aligned.Value;
+        var centre = result.Rotation.Apply(new Vec3(5, -2, 1)) + result.Translation;
+        Check.Less(centre.Length, 0.02);
+        Check.Greater(result.Rotation.W, Math.Cos(0.01));
+
+        // What is left is the two tessellations disagreeing: a 16-segment facet sits up to
+        // 3 (1 - cos(pi/16)) = 0.058 inside the round surface the finer copy follows.
+        Check.Less(result.RootMeanSquareError, 0.08);
+    }
+
+    [Fact]
+    public void Alignment_refuses_fewer_than_three_sample_points()
+    {
+        var aligned = Fixtures.Engine.Transforms.Align(Fixtures.UnitCube(), Fixtures.UnitCube(), maxSamplePoints: 2);
+
+        Check.True(aligned.IsFailure);
+        Check.Equal("Transforms.InvalidAlignmentParameters", aligned.Error.Code);
+    }
+
+    [Fact]
+    public void Alignment_refuses_an_empty_mesh()
+    {
+        var aligned = Fixtures.Engine.Transforms.Align(ImmutableMesh.Empty, Fixtures.UnitCube());
+
+        Check.True(aligned.IsFailure);
+        Check.Equal("Mesh.EmptyOperand", aligned.Error.Code);
+    }
 }
