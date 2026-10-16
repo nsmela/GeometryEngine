@@ -14,6 +14,12 @@ internal static class GeneratorErrors
 
     public static readonly Error TooFewSegments =
         new("Generators.TooFewSegments", "A revolved surface needs at least three segments.");
+
+    public static readonly Error NonPositiveCellSize =
+        new("Generators.NonPositiveCellSize", "A level-set cell size must be greater than zero.");
+
+    public static readonly Error NonFiniteParameter =
+        new("Generators.NonFiniteParameter", "A generator parameter is NaN or infinite.");
 }
 
 /// <summary>
@@ -216,6 +222,47 @@ internal sealed class CylinderHandler
     }
 }
 
+/// <summary>Ask for a scalar field meshed at a level surface.</summary>
+public sealed record LevelSetRequest(LevelSetSpec Spec);
+
+internal sealed class LevelSetHandler
+{
+    public Result<IMesh> Handle(LevelSetRequest request)
+    {
+        ArgumentNullException.ThrowIfNull(request.Spec);
+        ArgumentNullException.ThrowIfNull(request.Spec.Field);
+
+        var spec = request.Spec;
+        if (!spec.BoundsMin.IsFinite || !spec.BoundsMax.IsFinite || !double.IsFinite(spec.CellSize) || !double.IsFinite(spec.Level))
+        {
+            return GeneratorErrors.NonFiniteParameter;
+        }
+
+        var size = spec.BoundsMax - spec.BoundsMin;
+        if (size.X <= 0 || size.Y <= 0 || size.Z <= 0)
+        {
+            return GeneratorErrors.DegenerateBox;
+        }
+
+        if (spec.CellSize <= 0)
+        {
+            return GeneratorErrors.NonPositiveCellSize;
+        }
+
+        var metadata = new MeshMetadata(
+            string.IsNullOrWhiteSpace(spec.Name) ? "level-set" : spec.Name,
+            "GeometryEngine.Generators.LevelSet");
+
+        return Internal.Native.ManifoldKernel.LevelSet(
+            spec.Field,
+            spec.BoundsMin,
+            spec.BoundsMax,
+            spec.CellSize,
+            spec.Level,
+            metadata);
+    }
+}
+
 /// <summary>The <see cref="IGeometryGenerators"/> facade over the generator slices.</summary>
 internal sealed class GeometryGenerators : IGeometryGenerators
 {
@@ -226,6 +273,7 @@ internal sealed class GeometryGenerators : IGeometryGenerators
     private readonly ArcHandler _arc = new();
     private readonly ResamplePathHandler _resample = new();
     private readonly DrapedPathHandler _draped = new(new Polygons.BufferPathHandler());
+    private readonly LevelSetHandler _levelSet = new();
 
     public Result<IMesh> GenerateTube(TubeSpec spec) => _tube.Handle(new TubeRequest(spec));
 
@@ -236,6 +284,8 @@ internal sealed class GeometryGenerators : IGeometryGenerators
         _resample.Handle(new ResamplePathRequest(path, spacing, smoothingIterations));
 
     public Result<IMesh> GenerateDrapedPath(DrapedPathSpec spec) => _draped.Handle(new DrapedPathRequest(spec));
+
+    public Result<IMesh> GenerateLevelSet(LevelSetSpec spec) => _levelSet.Handle(new LevelSetRequest(spec));
 
     public Result<IMesh> GenerateBox(Vec3 min, Vec3 max) => _box.Handle(new BoxRequest(min, max));
 

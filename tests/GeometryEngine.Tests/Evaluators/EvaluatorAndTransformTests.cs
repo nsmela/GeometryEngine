@@ -128,4 +128,28 @@ public sealed class TransformTests
         Check.True(scaled.IsFailure);
         Check.Equal("Transforms.MirroringScale", scaled.Error.Code);
     }
+
+    [Fact]
+    public void Alignment_recovers_a_translated_and_rotated_mesh()
+    {
+        var target = Fixtures.Box(new Vec3(-2, -1, -0.5), new Vec3(2, 1, 0.5));
+        var axis = Direction.From(new Vec3(1, 2, 3)).Value;
+        var rotated = Fixtures.Engine.Transforms.Rotate(target, axis, 0.25).Value;
+        var displaced = Fixtures.Engine.Transforms.Translate(rotated, new Vec3(12, -7, 4)).Value;
+
+        var aligned = Fixtures.Engine.Transforms.Align(displaced, target, maxIterations: 60, tolerance: 1e-6);
+
+        Check.True(aligned.IsSuccess);
+        Check.Less(aligned.Value.RootMeanSquareError, 0.05);
+        Check.RelativelyClose(Fixtures.VolumeOf(target), Fixtures.VolumeOf(aligned.Value.AlignedMesh), 1e-9);
+    }
+
+    [Fact]
+    public void Alignment_refuses_an_empty_mesh()
+    {
+        var aligned = Fixtures.Engine.Transforms.Align(ImmutableMesh.Empty, Fixtures.UnitCube());
+
+        Check.True(aligned.IsFailure);
+        Check.Equal("Mesh.EmptyOperand", aligned.Error.Code);
+    }
 }

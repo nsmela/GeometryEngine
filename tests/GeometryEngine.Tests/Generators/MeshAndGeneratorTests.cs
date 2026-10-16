@@ -144,4 +144,39 @@ public sealed class GeneratorTests
         Check.True(cylinder.IsFailure);
         Check.Equal("Generators.TooFewSegments", cylinder.Error.Code);
     }
+
+    [Fact]
+    public void A_level_set_sphere_is_watertight_and_matches_its_volume()
+    {
+        var radius = 2.0;
+        var spec = new LevelSetSpec(
+            Field: p => p.Length - radius,
+            BoundsMin: new Vec3(-3, -3, -3),
+            BoundsMax: new Vec3(3, 3, 3),
+            CellSize: 0.25,
+            Level: 0,
+            Name: "sdf-sphere");
+
+        var mesh = Fixtures.Engine.Generators.GenerateLevelSet(spec);
+
+        Check.True(mesh.IsSuccess);
+        Check.Equal("sdf-sphere", mesh.Value.Metadata.Name);
+        Check.True(Fixtures.TopologyOf(mesh.Value).IsWatertight);
+        Check.RelativelyClose(Fixtures.SphereVolume(radius), Fixtures.VolumeOf(mesh.Value), 0.02);
+    }
+
+    [Fact]
+    public void A_level_set_with_a_non_positive_cell_size_is_refused()
+    {
+        var spec = new LevelSetSpec(
+            Field: p => p.Length - 1,
+            BoundsMin: new Vec3(-2, -2, -2),
+            BoundsMax: new Vec3(2, 2, 2),
+            CellSize: 0);
+
+        var mesh = Fixtures.Engine.Generators.GenerateLevelSet(spec);
+
+        Check.True(mesh.IsFailure);
+        Check.Equal("Generators.NonPositiveCellSize", mesh.Error.Code);
+    }
 }
