@@ -39,7 +39,7 @@ internal sealed class MeshBvh
     /// <summary>
     /// Traversal scratch space. Every query is a stack-driven descent, and allocating a stack per
     /// query dominated the offset cost - the level-set mesher issues one query per sample. It is
-    /// thread-static because Manifold calls the distance callback from several threads at once.
+    /// thread-static because the level set samples the field from several threads at once.
     /// </summary>
     [ThreadStatic]
     private static int[]? _traversalStack;

@@ -35,11 +35,27 @@ those samples the mesher only needs the sign, so `ge_offset` clamps the field to
 around the offset: the closest-point search is bounded by it (the tree discards everything beyond
 without descending), and outside it the winding number runs at a coarser Barnes-Hut accuracy.
 Inside the band the values are exact. Measured on the bench meshes, this took a 1 mm offset from
-0.3-0.9 s to 0.16-0.26 s with identical output.
+0.3-0.9 s to 0.16-0.26 s with identical output, with Manifold's parallel mesher; the next section
+says what the sequential one costs.
 
 ```bash
 dotnet run -c Release --project bench/GeometryEngine.Benchmarks -- offset
 ```
+
+## Why it is repeatable
+
+Manifold's parallel mesher (`manifold_level_set`) is not: it numbers vertices in whatever order
+its threads reach them, and its topology cleanup then resolves some offsets into different
+geometry as well. A consumer replaying a history from its base mesh has to get back the body it
+saved, so `ge_offset` uses the sequential `manifold_level_set_seq`.
+
+On its own that samples the field on one thread, 5-20x slower. With no tolerance Manifold
+samples nothing but its own body-centred lattice, so `LatticeSamples` fills that lattice in
+parallel first and the mesher reads it back; a point it cannot match bit-for-bit is evaluated
+directly, so a change in how Manifold samples can only cost speed, never change the mesh. What
+remains is Manifold's meshing itself on one thread: 1.5-2x the parallel offset, 0.6-0.9 s (medians) on the
+bench meshes. The managed fallback (`ManifoldKernel.LevelSet`, via `LevelSetLattice`) does the
+same.
 
 ## Building
 

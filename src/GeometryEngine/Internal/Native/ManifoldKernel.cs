@@ -352,7 +352,7 @@ internal static unsafe class ManifoldKernel
 
             // Manifold keeps the region where the field is above the level, so the field is
             // handed over negated: positive inside the solid.
-            ManifoldNative.SdfCallback callback = (x, y, z, _) =>
+            double Sample(double x, double y, double z)
             {
                 if (Volatile.Read(ref fault) is not null)
                 {
@@ -376,7 +376,20 @@ internal static unsafe class ManifoldKernel
                     Interlocked.CompareExchange(ref fault, new FieldFault(ManifoldErrors.FieldFailed(exception)), null);
                     return 0;
                 }
-            };
+            }
+
+            // The sequential mesher, because the parallel one is not repeatable: it numbers
+            // vertices in whatever order its threads reach them, and its topology cleanup then
+            // resolves some fields into different geometry too. The sampling it would have done
+            // in parallel is done here instead, and the mesher reads it back.
+            var lattice = LevelSetLattice.Sample(Sample, min, max, edgeLength);
+            if (fault is not null)
+            {
+                return Result.Failure<IMesh>(fault.Error);
+            }
+
+            ManifoldNative.SdfCallback callback = (x, y, z, _) =>
+                lattice.TryGet(x, y, z, out var value) ? value : Sample(x, y, z);
 
             var box = IntPtr.Zero;
             var solid = IntPtr.Zero;
@@ -384,7 +397,7 @@ internal static unsafe class ManifoldKernel
             {
                 box = ManifoldNative.manifold_box(ManifoldNative.manifold_alloc_box(), min.X, min.Y, min.Z, max.X, max.Y, max.Z);
 
-                solid = ManifoldNative.manifold_level_set(
+                solid = ManifoldNative.manifold_level_set_seq(
                     ManifoldNative.manifold_alloc_manifold(), callback, box, edgeLength, -level, 0, IntPtr.Zero);
 
                 // The delegate must outlive the native call; without this the JIT is free to

@@ -233,10 +233,11 @@ internal static unsafe class ManifoldNative
 
     /// <summary>
     /// Meshes the isosurface where the field equals <c>level</c>. Manifold keeps the region where
-    /// the field is greater, so the field must read positive inside the solid.
+    /// the field is greater, so the field must read positive inside the solid. The sequential
+    /// variant: <c>manifold_level_set</c> meshes in parallel and is not repeatable.
     /// </summary>
     [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
-    public static extern IntPtr manifold_level_set(
+    public static extern IntPtr manifold_level_set_seq(
         IntPtr mem, SdfCallback sdf, IntPtr bounds, double edgeLength, double level, double tolerance, IntPtr context);
 
     // Extrusion
