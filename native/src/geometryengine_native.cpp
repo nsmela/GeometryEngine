@@ -141,6 +141,124 @@ void ParallelFor(size_t count, const Body& body)
     for (auto& worker : workers) worker.join();
 }
 
+/*
+ * The field sampled up front, in parallel, at every point Manifold's level-set mesher will ask
+ * for, so the sequential mesher - the only repeatable one - spends its time meshing rather than
+ * sampling on one thread.
+ *
+ * With no tolerance Manifold samples nothing but its lattice: a body-centred grid over the box,
+ * `origin + spacing * (i + (w == 1 ? 0 : -0.5))` for i in [0, gridSize - w] on each axis, with
+ * gridSize and spacing derived from the box and edge length as below (manifold `src/sdf.cpp`,
+ * `CreateLevelSet` and `BoundedSDF`). That is mirrored here, and a lookup only answers a point
+ * it recomputes bit-for-bit; anything else is evaluated directly. So if Manifold ever samples
+ * differently the offset gets slower, never different.
+ */
+class LatticeSamples {
+public:
+    LatticeSamples(const double* bounds, double edge_length)
+    {
+        for (int axis = 0; axis < 3; ++axis) {
+            origin_[axis] = std::min(bounds[axis], bounds[axis + 3]);
+            const double dim = std::max(bounds[axis], bounds[axis + 3]) - origin_[axis];
+            const double cells = dim / edge_length + 1.0;
+            if (!(cells >= 2.0 && cells < 1.0e6)) return;
+            size_[axis] = static_cast<int>(cells);
+            spacing_[axis] = dim / static_cast<double>(size_[axis] - 1);
+        }
+        valid_ = true;
+    }
+
+    /// Samples every lattice point; `field` is called from several threads at once.
+    template <typename Field>
+    void Fill(const Field& field)
+    {
+        if (!valid_) return;
+
+        // Past this the grid is not one an offset's cell budget would allow; sample directly.
+        const size_t layer = Stride(0) * static_cast<size_t>(size_[0] + 1);
+        if (layer > (size_t{1} << 26)) return;
+        values_.assign(2 * layer, 0.0);
+
+        ParallelFor(values_.size(), [&](size_t index) {
+            int w, i, j, k;
+            Decode(index, w, i, j, k);
+            if (!InRange(w, i, j, k)) return;
+            values_[index] = field(Coordinate(0, i, w), Coordinate(1, j, w), Coordinate(2, k, w));
+        });
+    }
+
+    bool TryGet(double x, double y, double z, double& value) const
+    {
+        if (values_.empty()) return false;
+
+        int w = -1;
+        int lattice[3];
+        const double point[3] = {x, y, z};
+        for (int axis = 0; axis < 3; ++axis) {
+            // Twice the position in cells is even on the corner lattice and odd on the centres.
+            const double twice = 2.0 * (point[axis] - origin_[axis]) / spacing_[axis];
+            if (!(std::abs(twice) < 4.0e6)) return false;
+            const long long half = std::llround(twice);
+            const int axisW = (half & 1) == 0 ? 1 : 0;
+            if (w >= 0 && axisW != w) return false;
+            w = axisW;
+            lattice[axis] = static_cast<int>(w == 1 ? half / 2 : (half + 1) / 2);
+        }
+
+        if (!InRange(w, lattice[0], lattice[1], lattice[2])) return false;
+        if (Coordinate(0, lattice[0], w) != x || Coordinate(1, lattice[1], w) != y ||
+            Coordinate(2, lattice[2], w) != z) {
+            return false;
+        }
+
+        value = values_[Encode(w, lattice[0], lattice[1], lattice[2])];
+        return true;
+    }
+
+private:
+    double Coordinate(int axis, int index, int w) const
+    {
+        return origin_[axis] + spacing_[axis] * (static_cast<double>(index) + (w == 1 ? 0.0 : -0.5));
+    }
+
+    bool InRange(int w, int i, int j, int k) const
+    {
+        return i >= 0 && j >= 0 && k >= 0 &&
+               i <= size_[0] - w && j <= size_[1] - w && k <= size_[2] - w;
+    }
+
+    size_t Stride(int axis) const
+    {
+        size_t stride = 1;
+        for (int a = 2; a > axis; --a) stride *= static_cast<size_t>(size_[a] + 1);
+        return stride;
+    }
+
+    size_t Encode(int w, int i, int j, int k) const
+    {
+        return static_cast<size_t>(w) * Stride(0) * static_cast<size_t>(size_[0] + 1) +
+               static_cast<size_t>(i) * Stride(0) + static_cast<size_t>(j) * Stride(1) +
+               static_cast<size_t>(k);
+    }
+
+    void Decode(size_t index, int& w, int& i, int& j, int& k) const
+    {
+        const size_t layer = Stride(0) * static_cast<size_t>(size_[0] + 1);
+        w = static_cast<int>(index / layer);
+        index %= layer;
+        i = static_cast<int>(index / Stride(0));
+        index %= Stride(0);
+        j = static_cast<int>(index / Stride(1));
+        k = static_cast<int>(index % Stride(1));
+    }
+
+    double origin_[3] = {0, 0, 0};
+    double spacing_[3] = {1, 1, 1};
+    int size_[3] = {0, 0, 0};
+    bool valid_ = false;
+    std::vector<double> values_;
+};
+
 /// Runs a body that may throw, turning any C++ exception into a status. Nothing may cross the
 /// C boundary as an exception: the managed caller cannot catch it, and the runtime aborts.
 template <typename Body>
@@ -335,20 +453,38 @@ int32_t ge_offset(
         box = manifold.alloc_box();
         manifold.box(box, bounds[0], bounds[1], bounds[2], bounds[3], bounds[4], bounds[5]);
 
+        // Wide enough that every grid edge crossing the level has both ends' values exact: the
+        // offset itself, plus a few cells of margin for the mesher's interpolation and refinement.
+        const BandedField banded{field.get(), std::abs(offset_distance) + 4.0 * edge_length};
+
         // Manifold keeps the region where the field is above the level, so the field is handed
         // over negated - positive inside the solid - and the surface `offset_distance` outside
         // sits at the level of the same magnitude, negated to match.
-        auto sample = [](double x, double y, double z, void* context) -> double {
-            const auto* banded = static_cast<const BandedField*>(context);
-            return -banded->field->BandedSignedDistance(Eigen::RowVector3d(x, y, z), banded->band);
+        const auto direct = [&banded](double x, double y, double z) {
+            return -banded.field->BandedSignedDistance(Eigen::RowVector3d(x, y, z), banded.band);
         };
 
-        // Wide enough that every grid edge crossing the level has both ends' values exact: the
-        // offset itself, plus a few cells of margin for the mesher's interpolation and refinement.
-        BandedField context{field.get(), std::abs(offset_distance) + 4.0 * edge_length};
+        LatticeSamples lattice(bounds, edge_length);
+        lattice.Fill(direct);
 
+        struct Context {
+            const BandedField* banded;
+            const LatticeSamples* lattice;
+        } context{&banded, &lattice};
+
+        auto sample = [](double x, double y, double z, void* opaque) -> double {
+            const auto* context = static_cast<const Context*>(opaque);
+            double value;
+            if (context->lattice->TryGet(x, y, z, value)) return value;
+            return -context->banded->field->BandedSignedDistance(Eigen::RowVector3d(x, y, z), context->banded->band);
+        };
+
+        // The sequential mesher, because the parallel one is not repeatable: it numbers vertices
+        // in whatever order its threads reach them, and its topology cleanup then resolves some
+        // offsets into different geometry too. A caller replaying a history has to get back the
+        // mesh it saved. The sampling it would have done in parallel is done above instead.
         solid = manifold.alloc_manifold();
-        manifold.level_set(solid, sample, box, edge_length, -offset_distance, 0, &context);
+        manifold.level_set_seq(solid, sample, box, edge_length, -offset_distance, 0, &context);
 
         if (manifold.status(solid) != 0 || manifold.num_tri(solid) == 0) {
             return static_cast<int32_t>(GE_ERROR_LEVEL_SET_FAILED);

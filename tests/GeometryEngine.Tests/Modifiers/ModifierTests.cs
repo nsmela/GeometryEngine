@@ -59,6 +59,46 @@ public sealed class OffsetTests
     }
 
     [Fact]
+    public void Offsetting_the_same_mesh_again_gives_the_same_mesh()
+    {
+        // A consumer that replays a history from its base mesh has to get back the body it saved.
+        // Manifold's parallel mesher numbered vertices in whatever order its threads finished, and
+        // inward or fine offsets moved them as well.
+        var bolus = Assets.LoadBench("ear_bolus.stl");
+
+        foreach (var distance in new[] { 1.0, -1.0, 0.1 })
+        {
+            var first = Fixtures.Engine.Modifiers.Offset(bolus, distance, cellSize: 1).Value;
+            for (var run = 0; run < 2; run++)
+            {
+                var again = Fixtures.Engine.Modifiers.Offset(bolus, distance, cellSize: 1).Value;
+                Check.True(first.Vertices.SequenceEqual(again.Vertices), $"vertices at {distance}");
+                Check.True(first.Triangles.SequenceEqual(again.Triangles), $"triangles at {distance}");
+            }
+        }
+    }
+
+    [Fact]
+    public void The_managed_field_offsets_the_same_mesh_again_to_the_same_mesh()
+    {
+        var bolus = Assets.LoadBench("ear_bolus.stl");
+        var bvh = new MeshBvh(bolus);
+        var stats = Fixtures.Engine.Evaluators.GetStatistics(bolus).Value;
+        var padding = new Vec3(1, 1, 1) * 3;
+
+        IMesh Offset() => ManifoldKernel.LevelSet(
+            bvh.SignedDistance, stats.BoundsMin - padding, stats.BoundsMax + padding, 1, -1, bolus.Metadata).Value;
+
+        var first = Offset();
+        for (var run = 0; run < 2; run++)
+        {
+            var again = Offset();
+            Check.True(first.Vertices.SequenceEqual(again.Vertices));
+            Check.True(first.Triangles.SequenceEqual(again.Triangles));
+        }
+    }
+
+    [Fact]
     public void An_erode_dilate_across_a_concave_crease_keeps_the_solid_whole()
     {
         var peanut = Fixtures.Engine.Booleans.Union(
