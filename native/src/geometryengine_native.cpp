@@ -3,6 +3,7 @@
 
 #include <igl/AABB.h>
 #include <igl/Hit.h>
+#include <igl/default_num_threads.h>
 #include <igl/fast_winding_number.h>
 
 #include <Eigen/Core>
@@ -12,23 +13,246 @@
 #include <cmath>
 #include <cstring>
 #include <exception>
+#include <limits>
 #include <memory>
+#include <mutex>
 #include <new>
 #include <thread>
 #include <vector>
+
+/*
+ * Row-major, so a vertex's three coordinates and a face's three corners each sit together: every
+ * query fetches them together. Eigen's default is column-major, which spreads one vertex across
+ * three cache lines; measured, an offset's sampling ran 11-18% faster this way, same results.
+ */
+using VertexMatrix = Eigen::Matrix<double, Eigen::Dynamic, 3, Eigen::RowMajor>;
+using FaceMatrix = Eigen::Matrix<int, Eigen::Dynamic, 3, Eigen::RowMajor>;
+
+/// Squared distance from `p` to the triangle whose corners are the nine doubles at `t`
+/// (Ericson, Real-Time Collision Detection, 5.1.5).
+inline double PointTriangleSquared(const double* p, const double* t)
+{
+    const double* a = t;
+    const double* b = t + 3;
+    const double* c = t + 6;
+    auto dot = [](const double* u, const double* v) { return u[0] * v[0] + u[1] * v[1] + u[2] * v[2]; };
+    auto squared = [p](const double* q) {
+        const double x = p[0] - q[0], y = p[1] - q[1], z = p[2] - q[2];
+        return x * x + y * y + z * z;
+    };
+
+    double ab[3], ac[3], ap[3], bp[3], cp[3];
+    for (int i = 0; i < 3; ++i) {
+        ab[i] = b[i] - a[i];
+        ac[i] = c[i] - a[i];
+        ap[i] = p[i] - a[i];
+        bp[i] = p[i] - b[i];
+        cp[i] = p[i] - c[i];
+    }
+
+    const double d1 = dot(ab, ap), d2 = dot(ac, ap);
+    if (d1 <= 0 && d2 <= 0) return squared(a);
+
+    const double d3 = dot(ab, bp), d4 = dot(ac, bp);
+    if (d3 >= 0 && d4 <= d3) return squared(b);
+
+    const double vc = d1 * d4 - d3 * d2;
+    if (vc <= 0 && d1 >= 0 && d3 <= 0) {
+        const double v = d1 / (d1 - d3);
+        const double q[3] = {a[0] + v * ab[0], a[1] + v * ab[1], a[2] + v * ab[2]};
+        return squared(q);
+    }
+
+    const double d5 = dot(ab, cp), d6 = dot(ac, cp);
+    if (d6 >= 0 && d5 <= d6) return squared(c);
+
+    const double vb = d5 * d2 - d1 * d6;
+    if (vb <= 0 && d2 >= 0 && d6 <= 0) {
+        const double w = d2 / (d2 - d6);
+        const double q[3] = {a[0] + w * ac[0], a[1] + w * ac[1], a[2] + w * ac[2]};
+        return squared(q);
+    }
+
+    const double va = d3 * d6 - d5 * d4;
+    if (va <= 0 && (d4 - d3) >= 0 && (d5 - d6) >= 0) {
+        const double w = (d4 - d3) / ((d4 - d3) + (d5 - d6));
+        const double q[3] = {b[0] + w * (c[0] - b[0]), b[1] + w * (c[1] - b[1]), b[2] + w * (c[2] - b[2])};
+        return squared(q);
+    }
+
+    const double denominator = 1.0 / (va + vb + vc);
+    const double v = vb * denominator, w = vc * denominator;
+    const double q[3] = {a[0] + ab[0] * v + ac[0] * w, a[1] + ab[1] * v + ac[1] * w, a[2] + ab[2] * v + ac[2] * w};
+    return squared(q);
+}
+
+/*
+ * The nearest triangle within a bound, and nothing else - all an offset ever asks of the surface.
+ *
+ * libigl's tree answers the same question, but each of its nodes is a separate allocation and it
+ * reaches a triangle's corners through the face and vertex matrices. Here the nodes are one array
+ * and each triangle's nine coordinates are copied out in leaf order, so a query walks memory
+ * forwards. Measured on the bench meshes: built in a quarter of the time, an offset's sampling
+ * 23-31% faster, and the meshes it produced identical to the bit.
+ */
+class DistanceTree {
+public:
+    bool Empty() const { return nodes_.empty(); }
+
+    template <typename DV, typename DF>
+    void Build(const DV& V, const DF& F)
+    {
+        const int count = static_cast<int>(F.rows());
+        std::vector<int> order(count);
+        std::vector<double> centroid(static_cast<size_t>(count) * 3);
+        for (int t = 0; t < count; ++t) {
+            order[t] = t;
+            for (int a = 0; a < 3; ++a) {
+                centroid[static_cast<size_t>(t) * 3 + a] = (V(F(t, 0), a) + V(F(t, 1), a) + V(F(t, 2), a)) / 3.0;
+            }
+        }
+
+        nodes_.clear();
+        nodes_.reserve(static_cast<size_t>(count) / 2 + 8);
+        nodes_.emplace_back();
+        BuildNode(0, 0, count, order, centroid, V, F);
+
+        corners_.resize(static_cast<size_t>(count) * 9);
+        for (int s = 0; s < count; ++s) {
+            const int t = order[s];
+            for (int c = 0; c < 3; ++c) {
+                for (int a = 0; a < 3; ++a) corners_[static_cast<size_t>(s) * 9 + c * 3 + a] = V(F(t, c), a);
+            }
+        }
+    }
+
+    /// Squared distance to the nearest triangle closer than sqrt(bound2), or bound2 when none is;
+    /// `found` says which.
+    double Query(const double* p, double bound2, bool& found) const
+    {
+        found = false;
+        double best = bound2;
+        int stack[128];
+        int top = 0;
+        if (BoxSquared(nodes_[0], p) < best) stack[top++] = 0;
+
+        while (top > 0) {
+            const Node& node = nodes_[stack[--top]];
+            if (BoxSquared(node, p) >= best) continue;
+
+            if (node.count > 0) {
+                for (int s = node.first; s < node.first + node.count; ++s) {
+                    const double d = PointTriangleSquared(p, &corners_[static_cast<size_t>(s) * 9]);
+                    if (d < best) {
+                        best = d;
+                        found = true;
+                    }
+                }
+                continue;
+            }
+
+            // Nearer child last, so it is searched first and tightens the bound for the other.
+            const int left = node.first, right = node.first + 1;
+            const double dl = BoxSquared(nodes_[left], p), dr = BoxSquared(nodes_[right], p);
+            const int nearer = dl <= dr ? left : right, farther = dl <= dr ? right : left;
+            if (std::max(dl, dr) < best) stack[top++] = farther;
+            if (std::min(dl, dr) < best) stack[top++] = nearer;
+        }
+        return best;
+    }
+
+private:
+    static constexpr int LeafSize = 4;
+
+    /// A leaf holds `count` triangles from `first`; an inner node has count 0 and its children
+    /// at `first` and `first + 1`.
+    struct Node {
+        double lo[3], hi[3];
+        int first = 0;
+        int count = 0;
+    };
+
+    static double BoxSquared(const Node& node, const double* p)
+    {
+        double d = 0;
+        for (int a = 0; a < 3; ++a) {
+            const double e = p[a] < node.lo[a] ? node.lo[a] - p[a] : (p[a] > node.hi[a] ? p[a] - node.hi[a] : 0.0);
+            d += e * e;
+        }
+        return d;
+    }
+
+    template <typename DV, typename DF>
+    void BuildNode(int index, int begin, int end, std::vector<int>& order, const std::vector<double>& centroid,
+                   const DV& V, const DF& F)
+    {
+        Node node;
+        double clo[3], chi[3];
+        for (int a = 0; a < 3; ++a) {
+            node.lo[a] = clo[a] = std::numeric_limits<double>::infinity();
+            node.hi[a] = chi[a] = -std::numeric_limits<double>::infinity();
+        }
+        for (int s = begin; s < end; ++s) {
+            const int t = order[s];
+            for (int c = 0; c < 3; ++c) {
+                for (int a = 0; a < 3; ++a) {
+                    node.lo[a] = std::min(node.lo[a], V(F(t, c), a));
+                    node.hi[a] = std::max(node.hi[a], V(F(t, c), a));
+                }
+            }
+            for (int a = 0; a < 3; ++a) {
+                clo[a] = std::min(clo[a], centroid[static_cast<size_t>(t) * 3 + a]);
+                chi[a] = std::max(chi[a], centroid[static_cast<size_t>(t) * 3 + a]);
+            }
+        }
+
+        if (end - begin <= LeafSize) {
+            node.first = begin;
+            node.count = end - begin;
+            nodes_[index] = node;
+            return;
+        }
+
+        // Halve at the median centroid along the widest spread; children go in as a pair.
+        int axis = 0;
+        for (int a = 1; a < 3; ++a) {
+            if (chi[a] - clo[a] > chi[axis] - clo[axis]) axis = a;
+        }
+        const int middle = begin + (end - begin) / 2;
+        std::nth_element(order.begin() + begin, order.begin() + middle, order.begin() + end, [&](int x, int y) {
+            return centroid[static_cast<size_t>(x) * 3 + axis] < centroid[static_cast<size_t>(y) * 3 + axis];
+        });
+
+        node.first = static_cast<int>(nodes_.size());
+        nodes_.emplace_back();
+        nodes_.emplace_back();
+        nodes_[index] = node;
+        BuildNode(node.first, begin, middle, order, centroid, V, F);
+        BuildNode(node.first + 1, middle, end, order, centroid, V, F);
+    }
+
+    std::vector<Node> nodes_;
+    std::vector<double> corners_;
+};
 
 /*
  * A mesh with everything needed to answer distance, closest-point and ray queries against it.
  *
  * The precomputation lives here rather than being rebuilt per query, and every member is
  * read-only once built - which is what makes the queries safe to call from the several threads
- * Manifold meshes on.
+ * Manifold meshes on. A field for batch queries and rays carries libigl's tree; a field for an
+ * offset carries the flat DistanceTree instead, since that is the only question an offset asks.
  */
 struct GeField {
-    Eigen::MatrixXd V;
-    Eigen::MatrixXi F;
-    igl::AABB<Eigen::MatrixXd, 3> tree;
+    VertexMatrix V;
+    FaceMatrix F;
+    igl::AABB<VertexMatrix, 3> tree;
+    DistanceTree distanceTree;
     igl::FastWindingNumberBVH windingBvh;
+
+    /// The winding number's multipole expansion order. Until this had a name of its own the
+    /// accuracy below was passed in its place, cast to int - the same 2, so nothing changed.
+    static constexpr int WindingExpansionOrder = 2;
 
     /// Barnes-Hut accuracy for the winding number. libigl recommends 2; the sign only has to be
     /// right, and it is not close to the 0.5 threshold anywhere the magnitude matters.
@@ -83,15 +307,23 @@ struct GeField {
      */
     double BandedSignedDistance(const Eigen::RowVector3d& point, double band) const
     {
-        int face = -1;
-        Eigen::RowVector3d closest;
-        const double squared = tree.squared_distance(V, F, point, band * band, face, closest);
-        const double distance = face < 0 ? band : std::min(std::sqrt(squared), band);
+        bool inBand = false;
+        double squared;
+        if (!distanceTree.Empty()) {
+            const double p[3] = {point(0), point(1), point(2)};
+            squared = distanceTree.Query(p, band * band, inBand);
+        } else {
+            int face = -1;
+            Eigen::RowVector3d closest;
+            squared = tree.squared_distance(V, F, point, band * band, face, closest);
+            inBand = face >= 0;
+        }
+        const double distance = inBand ? std::min(std::sqrt(squared), band) : band;
 
         // Beyond the band the winding number sits near 0 or 1, nowhere near the 0.5 that decides
         // the sign, so a coarser Barnes-Hut approximation answers it just as well for less work.
         const float winding = igl::fast_winding_number(
-            windingBvh, face < 0 ? FarWindingAccuracy : WindingAccuracy, point.cast<float>().eval());
+            windingBvh, inBand ? WindingAccuracy : FarWindingAccuracy, point.cast<float>().eval());
 
         return winding > 0.5f ? -distance : distance;
     }
@@ -141,124 +373,6 @@ void ParallelFor(size_t count, const Body& body)
     for (auto& worker : workers) worker.join();
 }
 
-/*
- * The field sampled up front, in parallel, at every point Manifold's level-set mesher will ask
- * for, so the sequential mesher - the only repeatable one - spends its time meshing rather than
- * sampling on one thread.
- *
- * With no tolerance Manifold samples nothing but its lattice: a body-centred grid over the box,
- * `origin + spacing * (i + (w == 1 ? 0 : -0.5))` for i in [0, gridSize - w] on each axis, with
- * gridSize and spacing derived from the box and edge length as below (manifold `src/sdf.cpp`,
- * `CreateLevelSet` and `BoundedSDF`). That is mirrored here, and a lookup only answers a point
- * it recomputes bit-for-bit; anything else is evaluated directly. So if Manifold ever samples
- * differently the offset gets slower, never different.
- */
-class LatticeSamples {
-public:
-    LatticeSamples(const double* bounds, double edge_length)
-    {
-        for (int axis = 0; axis < 3; ++axis) {
-            origin_[axis] = std::min(bounds[axis], bounds[axis + 3]);
-            const double dim = std::max(bounds[axis], bounds[axis + 3]) - origin_[axis];
-            const double cells = dim / edge_length + 1.0;
-            if (!(cells >= 2.0 && cells < 1.0e6)) return;
-            size_[axis] = static_cast<int>(cells);
-            spacing_[axis] = dim / static_cast<double>(size_[axis] - 1);
-        }
-        valid_ = true;
-    }
-
-    /// Samples every lattice point; `field` is called from several threads at once.
-    template <typename Field>
-    void Fill(const Field& field)
-    {
-        if (!valid_) return;
-
-        // Past this the grid is not one an offset's cell budget would allow; sample directly.
-        const size_t layer = Stride(0) * static_cast<size_t>(size_[0] + 1);
-        if (layer > (size_t{1} << 26)) return;
-        values_.assign(2 * layer, 0.0);
-
-        ParallelFor(values_.size(), [&](size_t index) {
-            int w, i, j, k;
-            Decode(index, w, i, j, k);
-            if (!InRange(w, i, j, k)) return;
-            values_[index] = field(Coordinate(0, i, w), Coordinate(1, j, w), Coordinate(2, k, w));
-        });
-    }
-
-    bool TryGet(double x, double y, double z, double& value) const
-    {
-        if (values_.empty()) return false;
-
-        int w = -1;
-        int lattice[3];
-        const double point[3] = {x, y, z};
-        for (int axis = 0; axis < 3; ++axis) {
-            // Twice the position in cells is even on the corner lattice and odd on the centres.
-            const double twice = 2.0 * (point[axis] - origin_[axis]) / spacing_[axis];
-            if (!(std::abs(twice) < 4.0e6)) return false;
-            const long long half = std::llround(twice);
-            const int axisW = (half & 1) == 0 ? 1 : 0;
-            if (w >= 0 && axisW != w) return false;
-            w = axisW;
-            lattice[axis] = static_cast<int>(w == 1 ? half / 2 : (half + 1) / 2);
-        }
-
-        if (!InRange(w, lattice[0], lattice[1], lattice[2])) return false;
-        if (Coordinate(0, lattice[0], w) != x || Coordinate(1, lattice[1], w) != y ||
-            Coordinate(2, lattice[2], w) != z) {
-            return false;
-        }
-
-        value = values_[Encode(w, lattice[0], lattice[1], lattice[2])];
-        return true;
-    }
-
-private:
-    double Coordinate(int axis, int index, int w) const
-    {
-        return origin_[axis] + spacing_[axis] * (static_cast<double>(index) + (w == 1 ? 0.0 : -0.5));
-    }
-
-    bool InRange(int w, int i, int j, int k) const
-    {
-        return i >= 0 && j >= 0 && k >= 0 &&
-               i <= size_[0] - w && j <= size_[1] - w && k <= size_[2] - w;
-    }
-
-    size_t Stride(int axis) const
-    {
-        size_t stride = 1;
-        for (int a = 2; a > axis; --a) stride *= static_cast<size_t>(size_[a] + 1);
-        return stride;
-    }
-
-    size_t Encode(int w, int i, int j, int k) const
-    {
-        return static_cast<size_t>(w) * Stride(0) * static_cast<size_t>(size_[0] + 1) +
-               static_cast<size_t>(i) * Stride(0) + static_cast<size_t>(j) * Stride(1) +
-               static_cast<size_t>(k);
-    }
-
-    void Decode(size_t index, int& w, int& i, int& j, int& k) const
-    {
-        const size_t layer = Stride(0) * static_cast<size_t>(size_[0] + 1);
-        w = static_cast<int>(index / layer);
-        index %= layer;
-        i = static_cast<int>(index / Stride(0));
-        index %= Stride(0);
-        j = static_cast<int>(index / Stride(1));
-        k = static_cast<int>(index % Stride(1));
-    }
-
-    double origin_[3] = {0, 0, 0};
-    double spacing_[3] = {1, 1, 1};
-    int size_[3] = {0, 0, 0};
-    bool valid_ = false;
-    std::vector<double> values_;
-};
-
 /// Runs a body that may throw, turning any C++ exception into a status. Nothing may cross the
 /// C boundary as an exception: the managed caller cannot catch it, and the runtime aborts.
 template <typename Body>
@@ -272,6 +386,88 @@ int32_t Guarded(const Body& body)
         return GE_ERROR_EXCEPTION;
     } catch (...) {
         return GE_ERROR_EXCEPTION;
+    }
+}
+
+/*
+ * libigl starts a thread per hardware thread for every parallel loop in the winding number's
+ * build, and its recursive build nests them. Measured on a 20-thread machine, building it for an
+ * 81k-triangle mesh took 58 ms with all of them and 20 ms with four (26-28 ms with 1, 2 or 8).
+ * libigl fixes its count on its first parallel loop, so this runs before any.
+ */
+void LimitLibiglThreads()
+{
+    static std::once_flag once;
+    std::call_once(once, [] {
+        const unsigned int hardware = std::thread::hardware_concurrency();
+        igl::default_num_threads(std::max(1u, std::min(4u, hardware)));
+    });
+}
+
+/// What a field is built to answer: batch queries and rays, which need libigl's tree, or an
+/// offset, which needs only distances and is served by the flat DistanceTree.
+enum class FieldUse { Queries, Offset };
+
+GeField* CreateField(
+    const double*  vertices,
+    size_t         vertex_count,
+    const int32_t* triangles,
+    size_t         triangle_count,
+    FieldUse       use)
+{
+    if (vertices == nullptr || triangles == nullptr) return nullptr;
+    if (vertex_count == 0 || triangle_count == 0) return nullptr;
+
+    LimitLibiglThreads();
+
+    try {
+        auto field = std::make_unique<GeField>();
+
+        field->V.resize(static_cast<Eigen::Index>(vertex_count), 3);
+        for (size_t i = 0; i < vertex_count; ++i) {
+            field->V(static_cast<Eigen::Index>(i), 0) = vertices[i * 3];
+            field->V(static_cast<Eigen::Index>(i), 1) = vertices[i * 3 + 1];
+            field->V(static_cast<Eigen::Index>(i), 2) = vertices[i * 3 + 2];
+        }
+
+        field->F.resize(static_cast<Eigen::Index>(triangle_count), 3);
+        for (size_t i = 0; i < triangle_count; ++i) {
+            for (int c = 0; c < 3; ++c) {
+                int32_t index = triangles[i * 3 + c];
+                if (index < 0 || static_cast<size_t>(index) >= vertex_count) return nullptr;
+                field->F(static_cast<Eigen::Index>(i), c) = index;
+            }
+        }
+
+        // Both structures are built up front and read-only afterwards: the level set asks for
+        // several hundred thousand queries, so anything rebuilt per query would dominate. They are
+        // independent of each other, so the winding number's is built on a second thread.
+        std::exception_ptr windingFailure;
+        std::thread winding([&] {
+            try {
+                igl::fast_winding_number(field->V, field->F, GeField::WindingExpansionOrder, field->windingBvh);
+            } catch (...) {
+                windingFailure = std::current_exception();
+            }
+        });
+
+        try {
+            if (use == FieldUse::Offset) {
+                field->distanceTree.Build(field->V, field->F);
+            } else {
+                field->tree.init(field->V, field->F);
+            }
+        } catch (...) {
+            winding.join();
+            throw;
+        }
+
+        winding.join();
+        if (windingFailure) std::rethrow_exception(windingFailure);
+
+        return field.release();
+    } catch (...) {
+        return nullptr;
     }
 }
 
@@ -302,38 +498,7 @@ GeField* ge_field_create(
     const int32_t* triangles,
     size_t         triangle_count)
 {
-    if (vertices == nullptr || triangles == nullptr) return nullptr;
-    if (vertex_count == 0 || triangle_count == 0) return nullptr;
-
-    try {
-        auto field = std::make_unique<GeField>();
-
-        field->V.resize(static_cast<Eigen::Index>(vertex_count), 3);
-        for (size_t i = 0; i < vertex_count; ++i) {
-            field->V(static_cast<Eigen::Index>(i), 0) = vertices[i * 3];
-            field->V(static_cast<Eigen::Index>(i), 1) = vertices[i * 3 + 1];
-            field->V(static_cast<Eigen::Index>(i), 2) = vertices[i * 3 + 2];
-        }
-
-        field->F.resize(static_cast<Eigen::Index>(triangle_count), 3);
-        for (size_t i = 0; i < triangle_count; ++i) {
-            for (int c = 0; c < 3; ++c) {
-                int32_t index = triangles[i * 3 + c];
-                if (index < 0 || static_cast<size_t>(index) >= vertex_count) return nullptr;
-                field->F(static_cast<Eigen::Index>(i), c) = index;
-            }
-        }
-
-        // Both structures are built up front and read-only afterwards: the level set asks for
-        // several hundred thousand queries, so anything rebuilt per query would dominate.
-        field->tree.init(field->V, field->F);
-        igl::fast_winding_number(
-            field->V, field->F, static_cast<int>(GeField::WindingAccuracy), field->windingBvh);
-
-        return field.release();
-    } catch (...) {
-        return nullptr;
-    }
+    return CreateField(vertices, vertex_count, triangles, triangle_count, FieldUse::Queries);
 }
 
 void ge_field_destroy(GeField* field)
@@ -440,7 +605,7 @@ int32_t ge_offset(
     if (!manifold.loaded) return GE_ERROR_MANIFOLD_UNAVAILABLE;
 
     std::unique_ptr<GeField, void (*)(GeField*)> field(
-        ge_field_create(vertices, vertex_count, triangles, triangle_count),
+        CreateField(vertices, vertex_count, triangles, triangle_count, FieldUse::Offset),
         ge_field_destroy);
 
     if (!field) return GE_ERROR_EMPTY_MESH;
@@ -455,36 +620,23 @@ int32_t ge_offset(
 
         // Wide enough that every grid edge crossing the level has both ends' values exact: the
         // offset itself, plus a few cells of margin for the mesher's interpolation and refinement.
-        const BandedField banded{field.get(), std::abs(offset_distance) + 4.0 * edge_length};
+        BandedField banded{field.get(), std::abs(offset_distance) + 4.0 * edge_length};
 
         // Manifold keeps the region where the field is above the level, so the field is handed
         // over negated - positive inside the solid - and the surface `offset_distance` outside
         // sits at the level of the same magnitude, negated to match.
-        const auto direct = [&banded](double x, double y, double z) {
-            return -banded.field->BandedSignedDistance(Eigen::RowVector3d(x, y, z), banded.band);
+        auto sample = [](double x, double y, double z, void* context) -> double {
+            const auto* banded = static_cast<const BandedField*>(context);
+            return -banded->field->BandedSignedDistance(Eigen::RowVector3d(x, y, z), banded->band);
         };
 
-        LatticeSamples lattice(bounds, edge_length);
-        lattice.Fill(direct);
-
-        struct Context {
-            const BandedField* banded;
-            const LatticeSamples* lattice;
-        } context{&banded, &lattice};
-
-        auto sample = [](double x, double y, double z, void* opaque) -> double {
-            const auto* context = static_cast<const Context*>(opaque);
-            double value;
-            if (context->lattice->TryGet(x, y, z, value)) return value;
-            return -context->banded->field->BandedSignedDistance(Eigen::RowVector3d(x, y, z), context->banded->band);
-        };
-
-        // The sequential mesher, because the parallel one is not repeatable: it numbers vertices
-        // in whatever order its threads reach them, and its topology cleanup then resolves some
-        // offsets into different geometry too. A caller replaying a history has to get back the
-        // mesh it saved. The sampling it would have done in parallel is done above instead.
+        // The parallel mesher. Upstream it is not repeatable - it numbers vertices in whatever
+        // order its threads reach them, and its topology cleanup then resolves some offsets into
+        // different geometry - but the manifold.dll this library ships with is built with a patch
+        // that renumbers its output before cleanup (runtimes/README.md), so the same field gives the
+        // same mesh on every call, the same as the sequential mesher does.
         solid = manifold.alloc_manifold();
-        manifold.level_set_seq(solid, sample, box, edge_length, -offset_distance, 0, &context);
+        manifold.level_set(solid, sample, box, edge_length, -offset_distance, 0, &banded);
 
         if (manifold.status(solid) != 0 || manifold.num_tri(solid) == 0) {
             return static_cast<int32_t>(GE_ERROR_LEVEL_SET_FAILED);

@@ -30,8 +30,13 @@ so its absence is not later read as an oversight.
 Provenance — commit, toolchain, CMake flags, build date and the binary checksums — is
 documented in [`src/GeometryEngine/runtimes/README.md`](src/GeometryEngine/runtimes/README.md).
 
-No modifications were made to Manifold's source. If that ever changes, Apache-2.0 clause
-4(b) requires the modified files to carry prominent notices stating that they changed.
+**The redistributed `manifold.dll` is built from modified source.** One file changed:
+`src/sdf.cpp`, so that the parallel level-set mesher numbers its output deterministically. The
+whole change is
+[`src/GeometryEngine/runtimes/patches/manifold-7c86359-deterministic-level-set.patch`](src/GeometryEngine/runtimes/patches/manifold-7c86359-deterministic-level-set.patch),
+whose header says what changed, by whom and when, and the patched `sdf.cpp` carries a comment
+marking the change - the prominent notice Apache-2.0 clause 4(b) asks of a modified file.
+`manifoldc.dll`, the C bindings, is built from unmodified source in the same build.
 
 ---
 

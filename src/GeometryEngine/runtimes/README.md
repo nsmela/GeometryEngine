@@ -8,8 +8,8 @@ feed because the solution root clears all NuGet sources.
 
 | file | size | SHA-256 | role |
 |---|---|---|---|
-| `win-x64/native/manifoldc.dll` | 136,704 B | `88b2a17e98e98f6b6cdc4892a4c1daf94b6b33174b76bae14efd85ddd4babd64` | the C FFI surface (`MANIFOLD_CBIND=ON`), what `DllImport` binds to |
-| `win-x64/native/manifold.dll` | 3,126,272 B | `adc3ebb373769d81ca97e12490af91ea2d8538333d9142cc21ef341620287ca6` | the library proper, loaded as a dependency of `manifoldc.dll`; contains oneTBB, linked statically |
+| `win-x64/native/manifoldc.dll` | 136,704 B | `bdd838ef2e846643ffcbdecd71055622f56d38cc5ed07d358f708b03fb6a5186` | the C FFI surface (`MANIFOLD_CBIND=ON`), what `DllImport` binds to |
+| `win-x64/native/manifold.dll` | 3,131,392 B | `d150dfff41e96e2e6e0674a83f2967d2fc80623f8b67e9f90b24cf47fbb655a0` | the library proper, loaded as a dependency of `manifoldc.dll`; contains oneTBB, linked statically; **patched**, see below |
 
 Record the checksums when replacing these, so a change of binary is visible in review
 rather than being an opaque blob diff.
@@ -18,15 +18,15 @@ rather than being an opaque blob diff.
 
 | file | size | SHA-256 | role |
 |---|---|---|---|
-| `win-x64/native/geometryengine_native.dll` | 263,680 B | `4a3b70577fbfbad706fde67e53ce44a05a8ed18449708afa10e39c9919ee28df` | the libigl distance field behind offsets and batched spatial queries |
+| `win-x64/native/geometryengine_native.dll` | 274,944 B | `a87ebc1a7fa8cd3afcb77d100d855d842abce3b04463701a7d62e6c1a4e79979` | the libigl distance field behind offsets and batched spatial queries |
 
 Built from this repository's own `native/` (see `native/README.md`), not from upstream: libigl
 `v2.5.0` (commit `fdaac01`) and Eigen `3.4.0` (commit `3147391`), header-only, fetched by CMake.
 MSVC 19.44.35229 (Visual Studio 2022 17.14), x64, Release, **static CRT** (`/MT`) — it imports
 nothing but `KERNEL32`, so unlike `manifold.dll` it needs no VC++ redistributable. It resolves
-`manifoldc` by name at runtime rather than linking it, and meshes offsets with
-`manifold_level_set_seq` so the same input gives the same mesh. Built 2026-10-21, locally, not
-by CI.
+`manifoldc` by name at runtime rather than linking it, and meshes offsets with Manifold's parallel
+`manifold_level_set`, which gives the same mesh for the same input only because `manifold.dll` is
+the patched build below. Built 2026-10-22, locally, not by CI.
 
 It is optional: without it `DistanceFieldNative.IsAvailable` is false and offsets and batch
 queries run on the managed BVH, slower but with the same results. Offset results record which
@@ -73,15 +73,29 @@ rather than recovered.
 |---|---|
 | Upstream repository | https://github.com/elalish/manifold |
 | Commit | `7c86359` — the tip of upstream's `master` on 2026-09-09 |
+| Patch | [`patches/manifold-7c86359-deterministic-level-set.patch`](patches/manifold-7c86359-deterministic-level-set.patch) — `src/sdf.cpp` only |
 | Exported `manifold_*` entry points | 293 |
-| Toolchain | MSVC 19.44.35228 (Visual Studio 2022 17.14.x), x64 |
+| Toolchain | MSVC 19.44.35229 (Visual Studio 2022 17.14.x), x64 |
 | Generator | `Visual Studio 17 2022`, `-A x64` |
 | Build type | Release, dynamic CRT (`/MD`) |
 | `MANIFOLD_CBIND` | ON |
 | `BUILD_SHARED_LIBS` | ON |
 | `MANIFOLD_TEST` | OFF |
 | `MANIFOLD_PAR` | **ON** — oneTBB v2022.3.0, linked **statically** (`MANIFOLD_USE_BUILTIN_TBB=ON`) |
-| Built | 2026-09-11, locally, not by CI |
+| Built | 2026-10-22, locally, not by CI |
+
+**These binaries are patched,** and are therefore not upstream's `7c86359` but that commit plus
+the patch above. Upstream's parallel level-set mesher hands out vertex numbers and appends
+triangles in whatever order its threads run, and the halfedge build, topology cleanup and sorting
+after it depend on that order, so the same field meshed twice could come back as different
+geometry - which breaks a consumer that rebuilds a saved body by replaying its history. The patch
+renumbers vertices by where they were made and sorts the triangles before any of that runs; it
+changes nothing else. With it, the sequential and parallel meshers give the same mesh as each
+other on every call, which is what lets `ge_offset` use the parallel one. It is to be offered
+upstream; once a release carries an equivalent, the patch and this paragraph go.
+
+The same configuration without the patch was also built, as a control: its two DLLs match the
+previous unpatched binaries in size, and offsets through it gave output identical to them.
 
 **`7c86359` is not a tagged release,** and that is deliberate rather than an oversight. The
 nearest tag, v3.5.3, is **not an ancestor** of it: the two have diverged, with 46 commits on
@@ -107,17 +121,24 @@ Building with `-DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded` would remove the depe
 
 ### Verification run against these exact binaries
 
-- `dotnet run --project tests/GeometryEngine.Tests -c Release` — 117 passed, 0 failed, including
-  the determinism test, which is the one a parallel backend is most likely to break.
+- `dotnet run --project tests/GeometryEngine.Tests -c Release` — 322 passed, 0 failed, including
+  the tests that offset the same mesh repeatedly and require identical vertices and triangles.
+  With the unpatched control in place of `manifold.dll`, both of those fail.
 - `bench verify` — all 15 meshes PASS, union and subtract residuals 0.0000, `kernel` column
   `native` on 14. `mould_test.stl` falls back, exactly as it did with the previous
-  single-threaded binaries; it is the one input with a genuine tear.
+  binaries; it is the one input with a genuine tear.
+- A Fabolus smooth of three bench meshes, 12 runs each across 3 processes: one output per mesh,
+  identical to the patched sequential mesher's. Against the previous binaries the geometry is the
+  same for `ear_bolus.stl` and `test bolus 107mL.stl` (only the numbering differs) and differs in
+  one place on `larynx small.stl` (at most 0.70 mm, mean 0.0001 mm, volume +0.0008%), where the
+  cleanup now meets the vertices in a different order.
 
 ## Rebuilding
 
 ```bash
 git clone https://github.com/elalish/manifold
 cd manifold && git checkout 7c86359
+git apply <GeometryEngine>/src/GeometryEngine/runtimes/patches/manifold-7c86359-deterministic-level-set.patch
 cmake -B build -G "Visual Studio 17 2022" -A x64 \
   -DMANIFOLD_CBIND=ON -DBUILD_SHARED_LIBS=ON -DMANIFOLD_TEST=OFF \
   -DMANIFOLD_PAR=ON -DMANIFOLD_USE_BUILTIN_TBB=ON
