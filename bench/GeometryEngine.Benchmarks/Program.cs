@@ -1,6 +1,9 @@
 ﻿using BenchmarkDotNet.Running;
 using GeometryEngine.Benchmarks;
 
+// Every timing below assumes full clock speed; see PowerThrottling for why that is not the default.
+PowerThrottling.Disable();
+
 // Three modes:
 //   (no args)        run the BenchmarkDotNet timing + allocation suite
 //   verify           check the boolean volume identities on every test mesh
