@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using GeometryEngine.Core.Geometry;
+using GeometryEngine.Core.Geometry.Primitives;
 using GeometryEngine.Internal.Native;
 
 namespace GeometryEngine.Benchmarks;
@@ -34,6 +35,12 @@ internal static class SmoothCompare
 
     public static int Run(string[] args)
     {
+        if (args.Length > 1 && args[1] == "iterations")
+        {
+            Intensity = args.Length > 3 ? double.Parse(args[3], System.Globalization.CultureInfo.InvariantCulture) : Intensity;
+            return IterationStudy(args.Length > 2 && args[2] != "default" ? args[2].Split(',') : DefaultMeshes);
+        }
+
         if (args.Length > 1 && args[1] == "plan")
         {
             Intensity = args.Length > 3 ? double.Parse(args[3], System.Globalization.CultureInfo.InvariantCulture) : Intensity;
@@ -169,6 +176,123 @@ internal static class SmoothCompare
             $"{(topology.BoundaryEdgeCount == 0 && topology.NonManifoldEdgeCount == 0 ? "closed" : "OPEN")}   " +
             $"{(repeatable ? "repeatable" : "NOT REPEATABLE")}");
         Console.WriteLine("           " + string.Join("   ", medians.Select(m => double.IsNaN(m.Item2) ? m.phase : $"{m.phase} {m.Item2:F0}")));
+    }
+
+    /// <summary>
+    /// What each added iteration changes, both ways: the volume and deviation from the input, how
+    /// far the surface moved since one iteration fewer, and how rough it is (mean distance of a
+    /// vertex from its neighbours' centroid, over the mean edge length). For the grid it also
+    /// counts the nodes the added round changed, which is the closing's own answer to whether
+    /// another round has anything left to do.
+    /// </summary>
+    private static int IterationStudy(string[] meshes)
+    {
+        var engine = BspGeometryEngine.Create();
+        Console.WriteLine($"intensity {Intensity} mm, inflation {Inflation} mm, cell {Cell} mm, before decimation");
+
+        foreach (var name in meshes)
+        {
+            var mesh = TestMeshes.Load(engine, name);
+            var input = engine.Evaluators.GetStatistics(mesh).Value;
+            Console.WriteLine($"\n{name}: {mesh.TriangleCount} tris, roughness {Roughness(mesh):F3}");
+
+            foreach (var route in new[] { "offsets", "grid" })
+            {
+                IMesh? previous = null;
+                for (var n = 1; n <= 4; n++)
+                {
+                    var result = route == "offsets"
+                        ? engine.Modifiers.DoubleOffset(mesh, Intensity, n, Cell)
+                            .Bind(closed => engine.Modifiers.Offset(closed, Inflation, Cell))
+                        : engine.Modifiers.OffsetSmooth(mesh, Intensity, n, Cell, Inflation);
+                    if (result.IsFailure)
+                    {
+                        Console.WriteLine($"  {route,-8} x{n}  FAILED: {result.Error}");
+                        break;
+                    }
+
+                    var smoothed = result.Value;
+                    var stats = engine.Evaluators.GetStatistics(smoothed).Value;
+                    var fromInput = engine.Evaluators.MeasureDeviation(smoothed, mesh).Value;
+                    var moved = previous is null ? "" : Moved(engine, smoothed, previous);
+
+                    Console.WriteLine(
+                        $"  {route,-8} x{n}  volume {100 * ((stats.Volume / input.Volume) - 1),+6:F2} %   " +
+                        $"from input mean {fromInput.MeanAbsolute:F3} out {fromInput.MaxOutside:F2} in {fromInput.MaxInside:F2}   " +
+                        $"roughness {Roughness(smoothed):F3}   {moved}");
+                    previous = smoothed;
+                }
+            }
+
+            GridRounds(mesh);
+        }
+
+        return 0;
+    }
+
+    private static string Moved(IGeometryEngine engine, IMesh current, IMesh previous)
+    {
+        var d = engine.Evaluators.MeasureDeviation(current, previous).Value;
+        return $"moved since one fewer: mean {d.MeanAbsolute:F3} max {Math.Max(d.MaxOutside, d.MaxInside):F2}";
+    }
+
+    /// <summary>How many grid nodes each added closing round changes, and how many change sign.</summary>
+    private static void GridRounds(IMesh mesh)
+    {
+        var plan = Modifiers.OffsetSmoothHandler.Plan(mesh, Intensity, Cell, Inflation).Value;
+        var grid = Modifiers.OffsetSmoothHandler.SampleField(mesh, plan, Intensity);
+        Modifiers.OffsetSmoothHandler.Close(grid, Intensity, 1);
+
+        var line = new List<string>();
+        for (var n = 2; n <= 4; n++)
+        {
+            var before = grid.Values.ToArray();
+            Modifiers.OffsetSmoothHandler.Close(grid, Intensity, 1);
+            var after = grid.Values;
+            int changed = 0, flipped = 0;
+            double largest = 0;
+            for (var i = 0; i < before.Length; i++)
+            {
+                var delta = Math.Abs(after[i] - before[i]);
+                if (delta > 1e-12) { changed++; largest = Math.Max(largest, delta); }
+                if ((after[i] < 0) != (before[i] < 0)) { flipped++; }
+            }
+
+            line.Add($"round {n}: {changed} nodes changed (largest {largest:F4} mm), {flipped} flipped sign");
+        }
+
+        Console.WriteLine($"  grid of {grid.CellCount / 1000}k nodes - " + string.Join("; ", line));
+    }
+
+    /// <summary>Mean distance of each vertex from its neighbours' centroid, over the mean edge length.</summary>
+    private static double Roughness(IMesh mesh)
+    {
+        var neighbours = new HashSet<int>[mesh.VertexCount];
+        for (var v = 0; v < neighbours.Length; v++) { neighbours[v] = []; }
+        var t = mesh.Triangles;
+        double edgeSum = 0;
+        long edges = 0;
+        for (var i = 0; i < t.Length; i += 3)
+        {
+            for (var e = 0; e < 3; e++)
+            {
+                int a = t[i + e], b = t[i + ((e + 1) % 3)];
+                if (neighbours[a].Add(b)) { edgeSum += (mesh.Vertices[a] - mesh.Vertices[b]).Length; edges++; }
+                neighbours[b].Add(a);
+            }
+        }
+
+        double sum = 0;
+        var counted = 0;
+        for (var v = 0; v < neighbours.Length; v++)
+        {
+            if (neighbours[v].Count == 0) { continue; }
+            var centroid = neighbours[v].Aggregate(Vec3.Zero, (acc, n) => acc + mesh.Vertices[n]) * (1.0 / neighbours[v].Count);
+            sum += (mesh.Vertices[v] - centroid).Length;
+            counted++;
+        }
+
+        return sum / counted / (edgeSum / edges);
     }
 
     /// <summary>
