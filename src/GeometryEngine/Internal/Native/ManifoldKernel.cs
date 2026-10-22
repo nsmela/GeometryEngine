@@ -378,18 +378,7 @@ internal static unsafe class ManifoldKernel
                 }
             }
 
-            // The sequential mesher, because the parallel one is not repeatable: it numbers
-            // vertices in whatever order its threads reach them, and its topology cleanup then
-            // resolves some fields into different geometry too. The sampling it would have done
-            // in parallel is done here instead, and the mesher reads it back.
-            var lattice = LevelSetLattice.Sample(Sample, min, max, edgeLength);
-            if (fault is not null)
-            {
-                return Result.Failure<IMesh>(fault.Error);
-            }
-
-            ManifoldNative.SdfCallback callback = (x, y, z, _) =>
-                lattice.TryGet(x, y, z, out var value) ? value : Sample(x, y, z);
+            ManifoldNative.SdfCallback callback = (x, y, z, _) => Sample(x, y, z);
 
             var box = IntPtr.Zero;
             var solid = IntPtr.Zero;
@@ -397,7 +386,9 @@ internal static unsafe class ManifoldKernel
             {
                 box = ManifoldNative.manifold_box(ManifoldNative.manifold_alloc_box(), min.X, min.Y, min.Z, max.X, max.Y, max.Z);
 
-                solid = ManifoldNative.manifold_level_set_seq(
+                // The parallel mesher, repeatable because the manifold.dll shipped here carries
+                // upstream's 362a2de, which renumbers its output before cleanup (runtimes/README.md).
+                solid = ManifoldNative.manifold_level_set(
                     ManifoldNative.manifold_alloc_manifold(), callback, box, edgeLength, -level, 0, IntPtr.Zero);
 
                 // The delegate must outlive the native call; without this the JIT is free to

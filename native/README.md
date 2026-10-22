@@ -20,8 +20,9 @@ slower rather than broken.
 
 ## How it signs
 
-The magnitude of every distance comes from libigl's AABB tree; only the *sign* comes from the fast
-winding number. Neither of libigl's own `signed_distance` helpers is used:
+The magnitude of every distance is the exact distance to the nearest triangle - from libigl's AABB
+tree for batch queries, from `DistanceTree` for offsets (below) - and only the *sign* comes from
+the fast winding number. Neither of libigl's own `signed_distance` helpers is used:
 
 - `signed_distance_fast_winding_number` scales the distance by the winding number rather than
   merely signing it, so an isosurface asked for at 1 mm lands short of it.
@@ -35,8 +36,23 @@ those samples the mesher only needs the sign, so `ge_offset` clamps the field to
 around the offset: the closest-point search is bounded by it (the tree discards everything beyond
 without descending), and outside it the winding number runs at a coarser Barnes-Hut accuracy.
 Inside the band the values are exact. Measured on the bench meshes, this took a 1 mm offset from
-0.3-0.9 s to 0.16-0.26 s with identical output, with Manifold's parallel mesher; the next section
-says what the sequential one costs.
+0.3-0.9 s to 0.16-0.26 s with identical output.
+
+The rest of an offset's field is about memory and threads, and none of it changes a result -
+each was checked against the mesh it replaced, bit for bit:
+
+- **Offsets query a flat tree.** libigl's AABB tree allocates every node separately and reaches a
+  triangle's corners through the face and vertex matrices. `DistanceTree` keeps its nodes in one
+  array and copies each triangle's nine coordinates out in leaf order, so a query walks memory
+  forwards. It answers only "how far is the nearest triangle within this bound", which is all an
+  offset asks, and builds in about a quarter of the time; sampling ran 23-31% faster. Batch
+  queries and rays still use libigl's tree, which also returns the closest point and casts rays.
+- **Vertices and faces are row-major,** so a vertex's three coordinates share a cache line rather
+  than sitting in three columns: 11-18% off the sampling on its own.
+- **The two trees are built at once**, the winding number's on a second thread.
+- **libigl gets four threads, not one per hardware thread.** It starts a thread per hardware
+  thread for every parallel loop in the winding number's build, and nests them; on a 20-thread
+  machine the build of an 81k-triangle mesh took 58 ms with all of them, 20 ms with four.
 
 ```bash
 dotnet run -c Release --project bench/GeometryEngine.Benchmarks -- offset
@@ -48,18 +64,24 @@ reads slow.
 
 ## Why it is repeatable
 
-Manifold's parallel mesher (`manifold_level_set`) is not: it numbers vertices in whatever order
-its threads reach them, and its topology cleanup then resolves some offsets into different
-geometry as well. A consumer replaying a history from its base mesh has to get back the body it
-saved, so `ge_offset` uses the sequential `manifold_level_set_seq`.
+A consumer replaying a history from its base mesh has to get back the body it saved, so the same
+field has to give the same mesh on every call. Manifold's parallel mesher did not, up to and
+including the `7c86359` this library builds on: it numbered vertices in whatever order its
+threads reached them, and its topology cleanup then resolved some offsets into different
+geometry as well.
 
-On its own that samples the field on one thread, several times slower. With no tolerance Manifold
-samples nothing but its own body-centred lattice, so `LatticeSamples` fills that lattice in
-parallel first and the mesher reads it back; a point it cannot match bit-for-bit is evaluated
-directly, so a change in how Manifold samples can only cost speed, never change the mesh. What
-remains is Manifold's meshing itself on one thread: 1.6-2.1x the parallel offset, 0.37-0.49 s
-(medians, unthrottled) on the bench meshes against 0.18-0.28 s before. The managed fallback (`ManifoldKernel.LevelSet`, via `LevelSetLattice`) does the
-same.
+Upstream fixed that in `362a2de` (elalish/manifold#1848): once the parallel passes have made the
+vertices and triangles, it renumbers them by where they were made before anything else runs, and
+the parallel and sequential meshers then give the same mesh as each other, every call. The
+`manifold.dll` shipped here is `7c86359` with that one commit backported (see
+`src/GeometryEngine/runtimes/README.md`), so `ge_offset` and the managed fallback
+(`ManifoldKernel.LevelSet`) use the parallel `manifold_level_set`.
+
+Before the backport, `ge_offset` used the sequential mesher behind a parallel pre-sampled lattice:
+0.37-0.49 s per bench offset. Now, with the field changes above, 0.17-0.27 s - back to, and below,
+what the unrepeatable parallel mesher cost - and a Fabolus smooth (offsets of +1, -1 and +0.1 mm,
+then a decimate) runs 50-59% faster. The repeat tests in `Modifiers / offset` fail if a
+`manifold.dll` without the fix is put back.
 
 ## Building
 

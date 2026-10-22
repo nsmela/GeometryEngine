@@ -32,7 +32,7 @@ struct ManifoldApi {
     void*     (*alloc_box)() = nullptr;
     void      (*delete_box)(void*) = nullptr;
     void*     (*box)(void*, double, double, double, double, double, double) = nullptr;
-    void*     (*level_set_seq)(void*, ManifoldSdfFn, void*, double, double, double, void*) = nullptr;
+    void*     (*level_set)(void*, ManifoldSdfFn, void*, double, double, double, void*) = nullptr;
     int32_t   (*status)(void*) = nullptr;
     size_t    (*num_tri)(void*) = nullptr;
     void*     (*alloc_meshgl64)() = nullptr;
@@ -107,7 +107,7 @@ inline const ManifoldApi& Manifold()
         bind(api.alloc_box, "manifold_alloc_box");
         bind(api.delete_box, "manifold_delete_box");
         bind(api.box, "manifold_box");
-        bind(api.level_set_seq, "manifold_level_set_seq");
+        bind(api.level_set, "manifold_level_set");
         bind(api.status, "manifold_status");
         bind(api.num_tri, "manifold_num_tri");
         bind(api.alloc_meshgl64, "manifold_alloc_meshgl64");
