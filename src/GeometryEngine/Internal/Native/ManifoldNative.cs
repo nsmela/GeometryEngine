@@ -234,8 +234,8 @@ internal static unsafe class ManifoldNative
     /// <summary>
     /// Meshes the isosurface where the field equals <c>level</c>. Manifold keeps the region where
     /// the field is greater, so the field must read positive inside the solid. Meshes in parallel,
-    /// calling the field from several threads; repeatable only with the patched binary shipped
-    /// here, which renumbers the output before cleanup (runtimes/README.md).
+    /// calling the field from several threads; repeatable because the binary shipped here carries
+    /// upstream's 362a2de, which renumbers the output before cleanup (runtimes/README.md).
     /// </summary>
     [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
     public static extern IntPtr manifold_level_set(

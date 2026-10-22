@@ -65,21 +65,23 @@ reads slow.
 ## Why it is repeatable
 
 A consumer replaying a history from its base mesh has to get back the body it saved, so the same
-field has to give the same mesh on every call. Upstream Manifold's parallel mesher does not: it
-numbers vertices in whatever order its threads reach them, and its topology cleanup then
-resolves some offsets into different geometry as well.
+field has to give the same mesh on every call. Manifold's parallel mesher did not, up to and
+including the `7c86359` this library builds on: it numbered vertices in whatever order its
+threads reached them, and its topology cleanup then resolved some offsets into different
+geometry as well.
 
-The `manifold.dll` shipped here is built with a patch that fixes that at the source (see
-`src/GeometryEngine/runtimes/README.md`): once the parallel passes have made the vertices and
-triangles, it renumbers them by where they were made before anything else runs. Patched, the
-parallel and sequential meshers give the same mesh as each other, every call, so `ge_offset`
-and the managed fallback (`ManifoldKernel.LevelSet`) use the parallel `manifold_level_set`.
+Upstream fixed that in `362a2de` (elalish/manifold#1848): once the parallel passes have made the
+vertices and triangles, it renumbers them by where they were made before anything else runs, and
+the parallel and sequential meshers then give the same mesh as each other, every call. The
+`manifold.dll` shipped here is `7c86359` with that one commit backported (see
+`src/GeometryEngine/runtimes/README.md`), so `ge_offset` and the managed fallback
+(`ManifoldKernel.LevelSet`) use the parallel `manifold_level_set`.
 
-Before the patch, `ge_offset` used the sequential mesher behind a parallel pre-sampled lattice:
+Before the backport, `ge_offset` used the sequential mesher behind a parallel pre-sampled lattice:
 0.37-0.49 s per bench offset. Now, with the field changes above, 0.17-0.27 s - back to, and below,
 what the unrepeatable parallel mesher cost - and a Fabolus smooth (offsets of +1, -1 and +0.1 mm,
-then a decimate) runs 50-59% faster. The repeat tests in `Modifiers / offset` fail if an unpatched
-`manifold.dll` is put back.
+then a decimate) runs 50-59% faster. The repeat tests in `Modifiers / offset` fail if a
+`manifold.dll` without the fix is put back.
 
 ## Building
 

@@ -386,8 +386,8 @@ internal static unsafe class ManifoldKernel
             {
                 box = ManifoldNative.manifold_box(ManifoldNative.manifold_alloc_box(), min.X, min.Y, min.Z, max.X, max.Y, max.Z);
 
-                // The parallel mesher, repeatable because the manifold.dll shipped here is built
-                // with a patch that renumbers its output before cleanup (runtimes/README.md).
+                // The parallel mesher, repeatable because the manifold.dll shipped here carries
+                // upstream's 362a2de, which renumbers its output before cleanup (runtimes/README.md).
                 solid = ManifoldNative.manifold_level_set(
                     ManifoldNative.manifold_alloc_manifold(), callback, box, edgeLength, -level, 0, IntPtr.Zero);
 

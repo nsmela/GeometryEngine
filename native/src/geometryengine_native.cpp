@@ -630,11 +630,11 @@ int32_t ge_offset(
             return -banded->field->BandedSignedDistance(Eigen::RowVector3d(x, y, z), banded->band);
         };
 
-        // The parallel mesher. Upstream it is not repeatable - it numbers vertices in whatever
-        // order its threads reach them, and its topology cleanup then resolves some offsets into
-        // different geometry - but the manifold.dll this library ships with is built with a patch
-        // that renumbers its output before cleanup (runtimes/README.md), so the same field gives the
-        // same mesh on every call, the same as the sequential mesher does.
+        // The parallel mesher. Before upstream's 362a2de it was not repeatable - it numbered vertices
+        // in whatever order its threads reached them, and its topology cleanup then resolved some
+        // offsets into different geometry. The manifold.dll this library ships with carries that
+        // fix, backported (runtimes/README.md), so the same field gives the same mesh on every call,
+        // the same as the sequential mesher does.
         solid = manifold.alloc_manifold();
         manifold.level_set(solid, sample, box, edge_length, -offset_distance, 0, &banded);
 

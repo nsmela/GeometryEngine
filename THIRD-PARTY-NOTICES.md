@@ -30,13 +30,14 @@ so its absence is not later read as an oversight.
 Provenance — commit, toolchain, CMake flags, build date and the binary checksums — is
 documented in [`src/GeometryEngine/runtimes/README.md`](src/GeometryEngine/runtimes/README.md).
 
-**The redistributed `manifold.dll` is built from modified source.** One file changed:
-`src/sdf.cpp`, so that the parallel level-set mesher numbers its output deterministically. The
-whole change is
-[`src/GeometryEngine/runtimes/patches/manifold-7c86359-deterministic-level-set.patch`](src/GeometryEngine/runtimes/patches/manifold-7c86359-deterministic-level-set.patch),
-whose header says what changed, by whom and when, and the patched `sdf.cpp` carries a comment
-marking the change - the prominent notice Apache-2.0 clause 4(b) asks of a modified file.
-`manifoldc.dll`, the C bindings, is built from unmodified source in the same build.
+**The redistributed `manifold.dll` is built from modified source:** commit `7c86359` with one
+later upstream commit, `362a2de` ("Make LevelSet output independent of thread scheduling",
+elalish/manifold#1848), backported onto it. The change is upstream's own and unaltered; it touches
+`src/sdf.cpp` (and adds a test). The whole of it is
+[`src/GeometryEngine/runtimes/patches/manifold-7c86359-backport-362a2de-level-set-determinism.patch`](src/GeometryEngine/runtimes/patches/manifold-7c86359-backport-362a2de-level-set-determinism.patch),
+whose header says what it is, whose it is, and when and why it was applied - the notice Apache-2.0
+clause 4(b) asks for when a redistributed work is built from changed files. `manifoldc.dll`, the C
+bindings, is built from unchanged source in the same build.
 
 ---
 
