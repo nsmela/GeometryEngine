@@ -35,6 +35,12 @@ internal static class SmoothCompare
 
     public static int Run(string[] args)
     {
+        if (args.Length > 1 && args[1] == "spheres")
+        {
+            var cell = args.Length > 2 ? double.Parse(args[2], System.Globalization.CultureInfo.InvariantCulture) : Cell;
+            return Spheres(cell);
+        }
+
         if (args.Length > 1 && args[1] == "iterations")
         {
             Intensity = args.Length > 3 ? double.Parse(args[3], System.Globalization.CultureInfo.InvariantCulture) : Intensity;
@@ -72,7 +78,7 @@ internal static class SmoothCompare
 
             Report(engine, "offsets", mesh, input, offsetRuns);
             Report(engine, "grid", mesh, input, gridRuns);
-            Console.WriteLine($"  band sampling closes to the full grid: {(BandMatchesFull(mesh, iterations) ? "identical" : "DIFFERENT")}");
+            Console.WriteLine($"  band sampling's mesh from full sampling's: {BandApartFromFull(engine, mesh, iterations):E1} mm at most");
         }
 
         return 0;
@@ -118,7 +124,7 @@ internal static class SmoothCompare
         phases.Add(("sample", clock.Elapsed.TotalMilliseconds));
 
         clock.Restart();
-        Modifiers.OffsetSmoothHandler.Close(grid, Intensity, iterations);
+        Modifiers.OffsetSmoothHandler.Close(grid, Intensity, iterations, Modifiers.OffsetSmoothHandler.Band(Intensity, Inflation, plan.Value.Cell), Inflation);
         grid.Shift(Inflation);
         phases.Add(("close", clock.Elapsed.TotalMilliseconds));
 
@@ -179,6 +185,44 @@ internal static class SmoothCompare
     }
 
     /// <summary>
+    /// Radius error of each route on spheres, which have nothing to fill: anything a closing does
+    /// to one is error, or the curvature smoothing the re-meshing adds. Intensity 1 mm, no
+    /// inflation, at the given cell. The offsets route's shrink per iteration times the radius
+    /// is its curvature-smoothing coefficient, printed as c.
+    /// </summary>
+    private static int Spheres(double cell)
+    {
+        var engine = BspGeometryEngine.Create();
+        double Radius(IMesh m) => Math.Cbrt(3 * engine.Evaluators.GetStatistics(m).Value.Volume / (4 * Math.PI));
+        var intensity = Math.Max(1, cell);
+        Console.WriteLine($"cell {cell} mm, intensity {intensity} mm, no inflation: radius change in mm");
+
+        foreach (var r in new[] { 4.0, 8.0, 16.0, 32.0 })
+        {
+            var sphere = engine.Generators.GenerateSphere(Vec3.Zero, r, 128).Value;
+            var r0 = Radius(sphere);
+            var line = $"r {r0,6:F2}:";
+            double perRound = 0;
+            foreach (var n in new[] { 1, 2, 4 })
+            {
+                var clock = Stopwatch.StartNew();
+                var offsets = engine.Modifiers.DoubleOffset(sphere, intensity, n, cell).Value;
+                var offsetsMs = clock.ElapsedMilliseconds;
+                clock.Restart();
+                var grid = engine.Modifiers.OffsetSmooth(sphere, intensity, n, cell).Value;
+                var gridMs = clock.ElapsedMilliseconds;
+                var shrink = Radius(offsets) - r0;
+                if (n == 4) { perRound = shrink / 4; }
+                line += $"   x{n} offsets {shrink:+0.000;-0.000} grid {Radius(grid) - r0:+0.000;-0.000} ({offsetsMs}/{gridMs} ms)";
+            }
+
+            Console.WriteLine($"{line}   c {-perRound * r0:F3} mm²");
+        }
+
+        return 0;
+    }
+
+    /// <summary>
     /// What each added iteration changes, both ways: the volume and deviation from the input, how
     /// far the surface moved since one iteration fewer, and how rough it is (mean distance of a
     /// vertex from its neighbours' centroid, over the mean edge length). For the grid it also
@@ -196,6 +240,7 @@ internal static class SmoothCompare
             var input = engine.Evaluators.GetStatistics(mesh).Value;
             Console.WriteLine($"\n{name}: {mesh.TriangleCount} tris, roughness {Roughness(mesh):F3}");
 
+            var offsetsAt = new Dictionary<int, IMesh>();
             foreach (var route in new[] { "offsets", "grid" })
             {
                 IMesh? previous = null;
@@ -215,6 +260,15 @@ internal static class SmoothCompare
                     var stats = engine.Evaluators.GetStatistics(smoothed).Value;
                     var fromInput = engine.Evaluators.MeasureDeviation(smoothed, mesh).Value;
                     var moved = previous is null ? "" : Moved(engine, smoothed, previous);
+                    if (route == "offsets")
+                    {
+                        offsetsAt[n] = smoothed;
+                    }
+                    else if (offsetsAt.TryGetValue(n, out var reference))
+                    {
+                        var apart = engine.Evaluators.MeasureDeviation(smoothed, reference).Value;
+                        moved += $"   vs offsets x{n}: mean {apart.MeanAbsolute:F3} out {apart.MaxOutside:F2} in {apart.MaxInside:F2}";
+                    }
 
                     Console.WriteLine(
                         $"  {route,-8} x{n}  volume {100 * ((stats.Volume / input.Volume) - 1),+6:F2} %   " +
@@ -240,15 +294,19 @@ internal static class SmoothCompare
     private static void GridRounds(IMesh mesh)
     {
         var plan = Modifiers.OffsetSmoothHandler.Plan(mesh, Intensity, Cell, Inflation).Value;
-        var grid = Modifiers.OffsetSmoothHandler.SampleField(mesh, plan, Intensity);
-        Modifiers.OffsetSmoothHandler.Close(grid, Intensity, 1);
+        var band = Modifiers.OffsetSmoothHandler.Band(Intensity, Inflation, plan.Cell);
+        double[] Closed(int rounds)
+        {
+            var grid = Modifiers.OffsetSmoothHandler.SampleField(mesh, plan, Intensity);
+            Modifiers.OffsetSmoothHandler.Close(grid, Intensity, rounds, band);
+            return grid.Values.ToArray();
+        }
 
         var line = new List<string>();
+        var before = Closed(1);
         for (var n = 2; n <= 4; n++)
         {
-            var before = grid.Values.ToArray();
-            Modifiers.OffsetSmoothHandler.Close(grid, Intensity, 1);
-            var after = grid.Values;
+            var after = Closed(n);
             int changed = 0, flipped = 0;
             double largest = 0;
             for (var i = 0; i < before.Length; i++)
@@ -259,9 +317,10 @@ internal static class SmoothCompare
             }
 
             line.Add($"round {n}: {changed} nodes changed (largest {largest:F4} mm), {flipped} flipped sign");
+            before = after;
         }
 
-        Console.WriteLine($"  grid of {grid.CellCount / 1000}k nodes - " + string.Join("; ", line));
+        Console.WriteLine($"  grid of {before.Length / 1000}k nodes - " + string.Join("; ", line));
     }
 
     /// <summary>Mean distance of each vertex from its neighbours' centroid, over the mean edge length.</summary>
@@ -325,19 +384,24 @@ internal static class SmoothCompare
     }
 
     /// <summary>
-    /// Whether the band sampler closes to bit for bit the grid full sampling does on this mesh -
-    /// which it must, unless the mesh's inside and outside disagree somewhere off the surface.
+    /// How far the mesh closed from the band-sampled field lies from the one closed from a fully
+    /// sampled field. Zero, to rounding, unless the mesh's inside and outside disagree somewhere
+    /// off the surface - and even then only out where full sampling keeps the stray signs.
     /// </summary>
-    private static bool BandMatchesFull(IMesh mesh, int iterations)
+    private static double BandApartFromFull(IGeometryEngine engine, IMesh mesh, int iterations)
     {
         var plan = Modifiers.OffsetSmoothHandler.Plan(mesh, Intensity, Cell, Inflation).Value;
+        var band = Modifiers.OffsetSmoothHandler.Band(Intensity, Inflation, plan.Cell);
         var full = Internal.Smoothing.SignedDistanceGrid.Sample(
             new Internal.Spatial.MeshBvh(mesh).SignedDistance, plan.Min, plan.Max, plan.Cell);
-        var band = Modifiers.OffsetSmoothHandler.SampleField(mesh, plan, Intensity);
+        var near = Modifiers.OffsetSmoothHandler.SampleField(mesh, plan, Intensity);
 
-        Modifiers.OffsetSmoothHandler.Close(full, Intensity, iterations);
-        Modifiers.OffsetSmoothHandler.Close(band, Intensity, iterations);
-        return full.Values.SequenceEqual(band.Values);
+        Modifiers.OffsetSmoothHandler.Close(full, Intensity, iterations, band);
+        Modifiers.OffsetSmoothHandler.Close(near, Intensity, iterations, band);
+        var apart = engine.Evaluators.MeasureDeviation(
+            Modifiers.OffsetSmoothHandler.Mesh(near, plan, mesh.Metadata).Value,
+            Modifiers.OffsetSmoothHandler.Mesh(full, plan, mesh.Metadata).Value).Value;
+        return Math.Max(apart.MaxOutside, apart.MaxInside);
     }
 
     private static bool SameMesh(IMesh a, IMesh b) =>

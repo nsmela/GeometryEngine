@@ -475,23 +475,26 @@ public interface IGeometryModifiers
     ///
     /// The whole cycle runs on one sampled distance field: the mesh is read once at the start and
     /// written once at the end, whatever the iteration count. <see cref="DoubleOffset"/> does the
-    /// same arithmetic but re-meshes between every step, so it pays the grid's cost once per pass
-    /// instead of once in total. Measured on a bolus at 2 mm, its volume drifts -1.0 %, -2.3 %,
-    /// -3.5 % over one, two and three rounds as the loss compounds, where this holds at +3.9 %,
-    /// +3.7 %, +3.6 % - and the sign is the honest one for a closing, which fills rather than
-    /// erodes. On a sphere, which has nothing to fill, the whole error is 0.5 % at one round and
-    /// 0.3 % at three. That error is one-sided: the result sits about a tenth of a cell outside
-    /// where it should (0.07-0.11 mm in radius at 1 mm cells, on spheres of radius 10 and 30),
-    /// because reinitialising measures to the grid-edge crossings rather than to the surface
-    /// between them, which overestimates distances slightly, so the deflation stops short.
+    /// same arithmetic but re-meshes between every step, so it pays the meshing's cost once per
+    /// pass instead of once in total.
     ///
-    /// Time follows from the same thing: the added rounds are grid sweeps, so the cost is roughly
-    /// flat in <paramref name="iterations"/> where <see cref="DoubleOffset"/> grows linearly. The
+    /// Iterations matter even though a closing repeated is the same closing: every reconstruction
+    /// of the surface from a grid - each re-meshing in <see cref="DoubleOffset"/>, each
+    /// reinitialisation here - lies very slightly inside a curved surface, so every round shrinks
+    /// it in proportion to its curvature. That is a step of curvature smoothing per iteration,
+    /// scaling with the cell squared, and it is most of what added iterations do. Here it is
+    /// about 0.15 cells² × the mean curvature per round, against 0.175 for
+    /// <see cref="DoubleOffset"/> (spheres of radius 4-32 at 0.5, 1 and 2 mm cells), plus about half
+    /// a round's worth once. On bolus scans one to four iterations land 0.01-0.03 mm from
+    /// <see cref="DoubleOffset"/>'s on average, with volumes within 0.3 %.
+    ///
+    /// Time follows from the same thing: an added round is two reinitialisations rather than two
+    /// meshings and field builds, so it costs less than a round of <see cref="DoubleOffset"/>. The
     /// field is sampled exactly only near the surface, so one iteration is also faster on a
-    /// typical bolus: 0.3-0.8 s at 1 mm cells against 1.4-2.2 s for DoubleOffset and an
-    /// inflation offset, on four 30-120 mm scans (bench <c>smooth</c>). It meshes at the cell asked
-    /// for, where an offset coarsens its grid to a budget, so on a model much past 150 mm it
-    /// returns several times as many triangles and can take longer. Pass a larger
+    /// typical bolus: 0.4-1.1 s at 1 mm cells against 1.4-2.1 s for DoubleOffset and an
+    /// inflation offset, on four 30-120 mm scans (bench <c>smooth</c>, four threads). It meshes at
+    /// the cell asked for, where an offset coarsens its grid to a budget, so on a model much past
+    /// 150 mm it returns several times as many triangles and can take longer. Pass a larger
     /// <paramref name="cellSize"/> if that matters.
     /// </summary>
     /// <param name="distance">How far to inflate and then deflate. Must be at least one grid cell.</param>

@@ -190,6 +190,44 @@ public sealed class OffsetSmoothTests
     }
 
     [Fact]
+    public void A_sphere_closes_to_about_itself()
+    {
+        // A sphere has nothing to fill. What is left is the grid's own error: the closing used to
+        // come out a tenth of a cell too large, from measuring to edge crossings rather than to
+        // the surface, and measuring to flat triangles instead cut it twice that much too small.
+        var sphere = Fixtures.Engine.Generators.GenerateSphere(Vec3.Zero, 16, 128).Value;
+        var before = RadiusOf(sphere);
+
+        var closed = Fixtures.Engine.Modifiers.OffsetSmooth(sphere, distance: 1, iterations: 1, cellSize: 1).Value;
+
+        Check.Close(before, RadiusOf(closed), 0.03);
+    }
+
+    [Fact]
+    public void Each_iteration_smooths_in_proportion_to_curvature_as_re_meshing_does()
+    {
+        // The closing alone is the same at any iteration count. What iterations have always done
+        // in the re-meshing route is shrink the surface a little per round in proportion to its
+        // curvature - curvature smoothing - and the grid route has to do the same: a tight sphere
+        // loses more radius per round than a loose one, by about the ratio of their radii.
+        double ShrinkPerRound(double radius)
+        {
+            var sphere = Fixtures.Engine.Generators.GenerateSphere(Vec3.Zero, radius, 128).Value;
+            var once = RadiusOf(Fixtures.Engine.Modifiers.OffsetSmooth(sphere, 1, 1, 1).Value);
+            var thrice = RadiusOf(Fixtures.Engine.Modifiers.OffsetSmooth(sphere, 1, 3, 1).Value);
+            return (once - thrice) / 2;
+        }
+
+        var tight = ShrinkPerRound(4);
+        var loose = ShrinkPerRound(16);
+
+        Check.Greater(loose, 0.002);
+        Check.RelativelyClose(4, tight / loose, 0.35);
+    }
+
+    private static double RadiusOf(IMesh mesh) => Math.Cbrt(3 * Fixtures.VolumeOf(mesh) / (4 * Math.PI));
+
+    [Fact]
     public void It_agrees_with_the_re_meshing_route_it_replaces()
     {
         // Same arithmetic, different bookkeeping: DoubleOffset re-meshes between the two halves
@@ -222,32 +260,30 @@ public sealed class OffsetSmoothTests
             var everywhere = SignedDistanceGrid.Sample(new MeshBvh(mesh).SignedDistance, plan.Min, plan.Max, plan.Cell);
             var nearOnly = OffsetSmoothHandler.SampleField(mesh, plan, distance);
 
-            OffsetSmoothHandler.Close(everywhere, distance, iterations: 2);
-            OffsetSmoothHandler.Close(nearOnly, distance, iterations: 2);
+            OffsetSmoothHandler.Close(everywhere, distance, iterations: 2, OffsetSmoothHandler.Band(distance, 0, plan.Cell));
+            OffsetSmoothHandler.Close(nearOnly, distance, iterations: 2, OffsetSmoothHandler.Band(distance, 0, plan.Cell));
 
             Check.True(everywhere.Values.SequenceEqual(nearOnly.Values));
         }
     }
 
     [Fact]
-    public void A_scan_with_a_face_doubled_backwards_still_closes_to_the_full_grid()
+    public void A_scan_with_a_face_doubled_backwards_closes_without_a_blob()
     {
-        // larynx small carries one face repeated with its winding reversed. The field's sign is
-        // wrong beside it, so a few band nodes there disagree with the rest. When each unsampled
-        // node took the sign of the band node nearest it, those few claimed everything closer to
-        // them than to the rest of the band, and the smoothed bolus grew a 14 mm blob. Each region
-        // takes the sign most of its band agrees on, and on this scan that is again exactly what
-        // sampling every node gives.
+        // larynx small carries one face repeated with its winding reversed, and the field's sign
+        // is wrong beside it. With the sweep-based reinitialisation, letting each unsampled node
+        // take the sign of the band node nearest it grew the smoothed bolus a 14 mm blob; each
+        // region now takes the sign most of its band agrees on, and the reinitialisation measures
+        // to the surface itself, either of which avoids it today. This holds the outcome. The
+        // defect still leaves a speck of well under a cubic millimetre beside the bolus -
+        // DoubleOffset leaves five - which is the input's doing, and is not what this guards.
         var scan = Assets.LoadBench("larynx small.stl");
-        var plan = OffsetSmoothHandler.Plan(scan, 1, 1).Value;
 
-        var everywhere = SignedDistanceGrid.Sample(new MeshBvh(scan).SignedDistance, plan.Min, plan.Max, plan.Cell);
-        var nearOnly = OffsetSmoothHandler.SampleField(scan, plan, 1);
+        var closed = Fixtures.Engine.Modifiers.OffsetSmooth(scan, distance: 1, iterations: 1, cellSize: 1).Value;
 
-        OffsetSmoothHandler.Close(everywhere, 1, iterations: 1);
-        OffsetSmoothHandler.Close(nearOnly, 1, iterations: 1);
-
-        Check.True(everywhere.Values.SequenceEqual(nearOnly.Values));
+        var bolus = Fixtures.Engine.Evaluators.SeparateComponents(closed).Value.MaxBy(Fixtures.VolumeOf)!;
+        Check.Greater(Fixtures.VolumeOf(bolus), Fixtures.VolumeOf(closed) * 0.999);
+        Check.Less(Fixtures.Engine.Evaluators.MeasureDeviation(bolus, scan).Value.MaxOutside, 1.0);
     }
 
     [Fact]

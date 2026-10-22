@@ -61,9 +61,18 @@ internal sealed class MeshBvh
         Dictionary<(int, int), Vec3> Edges);
 
     public MeshBvh(IMesh mesh)
+        : this(mesh.Vertices, mesh.Triangles)
     {
-        _vertices = mesh.Vertices;
-        _triangles = mesh.Triangles;
+    }
+
+    /// <summary>
+    /// A tree over bare triangles, which need not form a valid mesh: closest-point and distance
+    /// queries only read positions. The signed queries need consistent winding as well.
+    /// </summary>
+    public MeshBvh(ImmutableArray<Vec3> vertices, ImmutableArray<int> triangles)
+    {
+        _vertices = vertices;
+        _triangles = triangles;
 
         var triangleCount = _triangles.Length / 3;
         _triangleOrder = new int[triangleCount];
@@ -357,6 +366,20 @@ internal sealed class MeshBvh
         signedDistance = Signed(point, closest, triangle, distance, feature);
         return true;
     }
+
+    /// <summary>
+    /// Nearest point and triangle for a point nearer than <paramref name="within"/>, and false for
+    /// one that is not - exactly the unbounded answer when it answers.
+    /// </summary>
+    public bool TryClosestPoint(Vec3 point, double within, out Vec3 closest, out int triangle, out double distance) =>
+        ClosestPoint(point, out closest, out triangle, out distance, out _, within * within);
+
+    /// <summary>
+    /// Unsigned distance to the nearest triangle for a point nearer than <paramref name="within"/>,
+    /// and false for one that is not - exactly the unbounded distance when it answers.
+    /// </summary>
+    public bool TryDistance(Vec3 point, double within, out double distance) =>
+        ClosestPoint(point, out _, out _, out distance, out _, within * within);
 
     private double Signed(Vec3 point, Vec3 closest, int triangle, double distance, TriangleFeature feature)
     {

@@ -426,12 +426,11 @@ public sealed record OffsetSmoothRequest(IMesh Mesh, double Distance, int Iterat
 /// once to build the field and produced once at the end, however many rounds run in between.
 ///
 /// This is what separates it from <see cref="DoubleOffsetHandler"/>, which re-meshes twice per
-/// iteration and feeds each result back in as the next round's input. That costs two level-set
-/// meshings and two field builds per round, and compounds the error: every pass resamples a
-/// surface that was already a resampling, so detail is lost to the grid repeatedly instead of
-/// once. Here the grid is the state, and the only resampling is the final mesh - measured on a
-/// bolus, DoubleOffset's volume drifts -1.0 %, -2.3 %, -3.5 % over one to three rounds while
-/// this holds near +3.7 %, which is the direction a closing should move in.
+/// iteration and feeds each result back in as the next round's input, at the cost of two
+/// level-set meshings and two field builds per round. Here the grid is the state: a round is two
+/// reinitialisations, and the mesh is made once. Both routes reconstruct the surface twice a
+/// round, and every reconstruction lies very slightly inside a curved surface, so both smooth by
+/// curvature at much the same rate per iteration (see <see cref="SignedDistanceGrid.Reinitialise"/>).
 /// </summary>
 internal sealed class OffsetSmoothHandler
 {
@@ -449,11 +448,11 @@ internal sealed class OffsetSmoothHandler
     private const double BoxMarginCells = 3;
 
     /// <summary>
-    /// How far past the inflation the field is sampled exactly, in cells. One is the least the
-    /// closing needs (see <see cref="SignedDistanceGrid.SampleBand"/>); the second keeps a value
-    /// that lands on the boundary from deciding anything.
+    /// How far past the furthest shift the field is kept exact, in cells. A reinitialisation reads
+    /// the corners of every cell the level passes through - up to √3 cells from it - and, for the
+    /// surface normal, each corner's neighbours one cell further: 2.73 cells, so three.
     /// </summary>
-    private const double BandMarginCells = 2;
+    private const double BandMarginCells = 3;
 
     public Result<IMesh> Handle(OffsetSmoothRequest request)
     {
@@ -494,7 +493,7 @@ internal sealed class OffsetSmoothHandler
         }
 
         var grid = SampleField(mesh, plan.Value, distance);
-        Close(grid, distance, request.Iterations);
+        Close(grid, distance, request.Iterations, Band(distance, request.Inflation, plan.Value.Cell), request.Inflation);
 
         // The closing leaves a true distance field behind it, so an offset of the result is a
         // shift - exact, and without the second meshing an Offset call on the mesh would cost.
@@ -566,17 +565,41 @@ internal sealed class OffsetSmoothHandler
             bvh.TrySignedDistance, plan.Min, plan.Max, plan.Cell, distance, distance + (BandMarginCells * plan.Cell));
     }
 
-    /// <summary>The closing itself, entirely on the grid.</summary>
-    internal static void Close(SignedDistanceGrid grid, double distance, int iterations)
+    /// <summary>
+    /// How far from its zero level the closing keeps the field exact: past the furthest any shift
+    /// will move the level - the closing distance, or the inflation if that is larger - by the
+    /// margin <see cref="SignedDistanceGrid.SampleBand"/> needs.
+    /// </summary>
+    internal static double Band(double distance, double inflation, double cell) =>
+        Math.Max(distance, Math.Abs(inflation)) + (BandMarginCells * cell);
+
+    /// <summary>
+    /// The closing itself, entirely on the grid, leaving a field that is a true distance within
+    /// a few cells of its zero level - enough to mesh, and to shift by <paramref name="inflation"/>
+    /// first.
+    /// </summary>
+    internal static void Close(SignedDistanceGrid grid, double distance, int iterations, double band, double inflation = 0)
     {
         for (var i = 0; i < iterations; i++)
         {
             // Inflate, then recover a true field from the grown surface - see Reinitialise for
             // why the recovery is not optional. Then deflate and recover again.
             grid.Shift(distance);
-            grid.Reinitialise();
+            grid.Reinitialise(band);
             grid.Shift(-distance);
-            grid.Reinitialise();
+
+            // Except after the last deflation. The grown surface is an outward offset, so it is
+            // exactly the deflated surface grown back, and the field there is the distance to the
+            // grown surface less the distance - which near the deflated surface is the distance to
+            // it. The mesher and an inflation shift read nothing else, so the recovery would only
+            // add its cost, and the slight curvature shrink every recovery carries. The field is
+            // exact for the band less the distance around the level; an inflation needs a cell
+            // more than itself.
+            var last = i == iterations - 1;
+            if (!last || Math.Abs(inflation) + grid.Cell > band - distance)
+            {
+                grid.Reinitialise(band);
+            }
         }
     }
 

@@ -1,3 +1,6 @@
+using System.Collections.Immutable;
+using GeometryEngine.Internal.Spatial;
+
 namespace GeometryEngine.Internal.Smoothing;
 
 /// <summary>
@@ -19,13 +22,6 @@ internal sealed class SignedDistanceGrid
     private readonly int _nz;
     private readonly double[] _values;
 
-    /// <summary>
-    /// Nearest point on the zero level set, per node, reused across reinitialisations rather
-    /// than reallocated - this is the largest allocation in the operation.
-    /// </summary>
-    private readonly Vec3[] _closest;
-    private readonly bool[] _known;
-
     private SignedDistanceGrid(Vec3 origin, double cell, int nx, int ny, int nz, double[] values)
     {
         _origin = origin;
@@ -34,11 +30,12 @@ internal sealed class SignedDistanceGrid
         _ny = ny;
         _nz = nz;
         _values = values;
-        _closest = new Vec3[values.Length];
-        _known = new bool[values.Length];
     }
 
     public int CellCount => _values.Length;
+
+    /// <summary>The grid spacing.</summary>
+    public double Cell => _cell;
 
     /// <summary>
     /// Samples <paramref name="field"/> over the box, one point per grid node. This is the only
@@ -214,7 +211,8 @@ internal sealed class SignedDistanceGrid
     }
 
     /// <summary>
-    /// Recovers a true Euclidean signed distance field from the current zero level set.
+    /// Recovers a true Euclidean signed distance field from the current zero level set, exactly
+    /// within <paramref name="band"/> of it and as sign only beyond.
     ///
     /// This is the step that makes closing do anything, and it is worth being explicit about why.
     /// Shifting a true distance field by +d and then by -d returns exactly the field you started
@@ -224,39 +222,64 @@ internal sealed class SignedDistanceGrid
     /// met itself across a concavity - and recovering that difference is exactly what
     /// re-computing the distance does. Without this call the operation is a no-op.
     ///
-    /// Distances propagate as closest *points* rather than as scalars. A scalar transform has to
-    /// combine a node's sub-cell offset to the surface with its whole-cell distance to the seed
-    /// in quadrature, which underestimates the true distance by up to half a cell. That error is
-    /// one-sided, so the field comes out slightly too small everywhere, every shift then travels
-    /// slightly too far, and a closed sphere loses radius on each round - about 0.3 cells per
-    /// reinitialisation when measured. Carrying the closest point makes the distance a true
-    /// Euclidean norm to a real surface position, which removes the bias rather than shrinking it.
+    /// The zero level is triangulated - each cell split into six tetrahedra along its diagonal,
+    /// which neighbouring cells split the same way, so the surface is closed - and every node
+    /// within the band gets its distance to those triangles, corrected for their sag. Measuring
+    /// instead to the points where the level crosses grid edges, as an earlier version did,
+    /// overestimates every distance, since the nearest crossing is rarely the nearest surface
+    /// point: a closed sphere came out a tenth of a cell too large. Measuring to the flat
+    /// triangles alone errs the other way, because a triangle cornered on a curved surface lies
+    /// inside it: each reinitialisation then cut a little off in proportion to the curvature, and
+    /// a round of the closing shrank a sphere by about 0.30 cells² × its mean curvature. So the
+    /// distance is taken to the curved patch the triangle stands for instead - lifted at the
+    /// nearest point by what its corners' normals say the surface bends there (<see cref="Sag"/>).
+    /// That halves it, to about 0.15 cells² a round: close to the 0.175 cells² each round of the
+    /// re-meshing route cuts for the same reason, and like it a step of curvature smoothing per
+    /// iteration, scaling with the cell squared. Nodes beyond the band keep their sign at the
+    /// band's magnitude, which is all the next shift reads from them as long as it moves the level
+    /// less than the band less a cell.
     /// </summary>
-    public void Reinitialise()
+    public void Reinitialise(double band)
     {
-        SeedFromCrossings();
-
-        // Two round trips. A single forward and backward sweep propagates a closest point along
-        // any monotone path, which covers most of the grid; the second catches the nodes whose
-        // nearest seed lies around a corner from them.
-        Sweep(forward: true);
-        Sweep(forward: false);
-        Sweep(forward: true);
-        Sweep(forward: false);
-
-        for (var index = 0; index < _values.Length; index++)
+        var (vertices, normals, triangles) = TriangulateZeroLevel();
+        if (triangles.IsEmpty)
         {
-            if (!_known[index])
-            {
-                // Nothing reached it, which means there is no surface anywhere on the grid. Leave
-                // the sign and a magnitude larger than the box so the level set stays empty.
-                continue;
-            }
-
-            var distance = (PositionOf(index) - _closest[index]).Length;
-            _values[index] = _values[index] < 0 ? -distance : distance;
+            // No surface anywhere on the grid: leave the signs and magnitudes as they are, and
+            // the level set stays empty.
+            return;
         }
+
+        var surface = new MeshBvh(vertices, triangles);
+        var plane = _nx * _ny;
+
+        Parallel.For(0, _nz, k =>
+        {
+            for (var j = 0; j < _ny; j++)
+            {
+                for (var i = 0; i < _nx; i++)
+                {
+                    var index = (k * plane) + (j * _nx) + i;
+                    var sign = _values[index] < 0 ? -1.0 : 1.0;
+
+                    // The field was a distance before the shift that moved its level here, so a
+                    // node's value already bounds how near the new level can be: one at least the
+                    // band away from it needs no search to say so.
+                    if (Math.Abs(_values[index]) >= band ||
+                        !surface.TryClosestPoint(PositionOf(i, j, k), band, out var closest, out var triangle, out var distance))
+                    {
+                        _values[index] = sign * band;
+                        continue;
+                    }
+
+                    // The surface bulges out of the triangle by the sag, so it is that much nearer
+                    // a node outside and that much further from one inside. Each node reads only
+                    // its own old value, for its sign, so the update can be made in place.
+                    _values[index] = (sign * distance) - Sag(vertices, normals, triangle, closest);
+                }
+            }
+        });
     }
+
 
     /// <summary>
     /// The field at an arbitrary point, trilinearly interpolated and clamped at the box. Handed
@@ -286,18 +309,10 @@ internal sealed class SignedDistanceGrid
 
     private static double Lerp(double a, double b, double t) => a + ((b - a) * t);
 
+
     private double At(int i, int j, int k) => _values[(((k * _ny) + j) * _nx) + i];
 
     private int IndexOf(int i, int j, int k) => (((k * _ny) + j) * _nx) + i;
-
-    private Vec3 PositionOf(int index)
-    {
-        var i = index % _nx;
-        var j = index / _nx % _ny;
-        var k = index / (_nx * _ny);
-
-        return PositionOf(i, j, k);
-    }
 
     private Vec3 PositionOf(int i, int j, int k) => new(
         _origin.X + (i * _cell),
@@ -305,112 +320,179 @@ internal sealed class SignedDistanceGrid
         _origin.Z + (k * _cell));
 
     /// <summary>
-    /// Finds the zero crossing on each grid edge that has one, and gives both its nodes that
-    /// crossing point as their closest known surface position. Everything else starts unknown and
-    /// is filled in by the sweeps.
+    /// How far the surface a triangle approximates stands out of it at <paramref name="point"/>.
+    /// Its corners lie on the surface, so between them the surface departs from the flat triangle
+    /// by the quadratic each edge's normal change describes: for barycentric weights λ, half the
+    /// sum over edges of λᵢλⱼ (nⱼ - nᵢ)·(pⱼ - pᵢ). On a sphere of radius R that is ℓ²/8R at the
+    /// middle of an edge of length ℓ, its exact sag to second order. Clamped to a quarter of a cell,
+    /// so a corner where the normals turn sharply cannot throw the distance about.
     /// </summary>
-    private void SeedFromCrossings()
+    private double Sag(ImmutableArray<Vec3> vertices, Vec3[] normals, int triangle, Vec3 point)
     {
-        Array.Clear(_known);
+        var ia = triangle * 3;
+        Vec3 a = vertices[ia], b = vertices[ia + 1], c = vertices[ia + 2];
+        Vec3 na = normals[ia], nb = normals[ia + 1], nc = normals[ia + 2];
 
-        for (var k = 0; k < _nz; k++)
+        // Barycentric weights of the point, which lies on the triangle.
+        var ab = b - a;
+        var ac = c - a;
+        var ap = point - a;
+        var d00 = ab.Dot(ab);
+        var d01 = ab.Dot(ac);
+        var d11 = ac.Dot(ac);
+        var denominator = (d00 * d11) - (d01 * d01);
+        if (!(denominator > 1e-24))
         {
-            for (var j = 0; j < _ny; j++)
+            return 0;
+        }
+
+        var d20 = ap.Dot(ab);
+        var d21 = ap.Dot(ac);
+        var wb = ((d11 * d20) - (d01 * d21)) / denominator;
+        var wc = ((d00 * d21) - (d01 * d20)) / denominator;
+        var wa = 1 - wb - wc;
+
+        var sag = 0.5 * (
+            (wa * wb * (nb - na).Dot(b - a)) +
+            (wb * wc * (nc - nb).Dot(c - b)) +
+            (wc * wa * (na - nc).Dot(a - c)));
+
+        var limit = 0.25 * _cell;
+        return Math.Clamp(sag, -limit, limit);
+    }
+
+    /// <summary>
+    /// The zero level as a triangle soup, by marching tetrahedra: each cell is cut into the six
+    /// tetrahedra that share its main diagonal, and each tetrahedron the level passes through
+    /// contributes one or two triangles, cornered where it crosses the tetrahedron's edges. Each
+    /// corner carries the surface normal there, from the field's gradient. Planes are triangulated
+    /// in parallel and joined in order, so the soup depends only on the values.
+    /// </summary>
+    private (ImmutableArray<Vec3> Vertices, Vec3[] Normals, ImmutableArray<int> Triangles) TriangulateZeroLevel()
+    {
+        var slabs = new List<(Vec3 Point, Vec3 Normal)>[_nz - 1];
+
+        Parallel.For(0, _nz - 1, k =>
+        {
+            var soup = new List<(Vec3, Vec3)>();
+            Span<Vec3> corner = stackalloc Vec3[8];
+            Span<Vec3> gradient = stackalloc Vec3[8];
+            Span<double> value = stackalloc double[8];
+
+            for (var j = 0; j < _ny - 1; j++)
             {
-                for (var i = 0; i < _nx; i++)
+                for (var i = 0; i < _nx - 1; i++)
                 {
-                    var index = IndexOf(i, j, k);
-                    var value = _values[index];
+                    var negative = 0;
+                    for (var c = 0; c < 8; c++)
+                    {
+                        int ci = i + (c & 1), cj = j + ((c >> 1) & 1), ck = k + ((c >> 2) & 1);
+                        value[c] = _values[IndexOf(ci, cj, ck)];
+                        if (value[c] < 0) { negative++; }
+                    }
 
-                    var here = PositionOf(i, j, k);
-                    if (i + 1 < _nx) { SeedEdge(index, here, i + 1, j, k, value); }
-                    if (j + 1 < _ny) { SeedEdge(index, here, i, j + 1, k, value); }
-                    if (k + 1 < _nz) { SeedEdge(index, here, i, j, k + 1, value); }
-                }
-            }
-        }
-    }
-
-    /// <summary>
-    /// If the field changes sign along an edge, interpolates where it crosses and offers that
-    /// point to both ends. Sub-cell by construction: the crossing is a real position, not the
-    /// nearer node.
-    /// </summary>
-    private void SeedEdge(int here, Vec3 from, int ti, int tj, int tk, double valueHere)
-    {
-        var there = IndexOf(ti, tj, tk);
-        var valueThere = _values[there];
-        if ((valueHere < 0) == (valueThere < 0))
-        {
-            return;
-        }
-
-        var span = Math.Abs(valueHere) + Math.Abs(valueThere);
-        var t = span > 0 ? Math.Abs(valueHere) / span : 0.5;
-
-        var to = PositionOf(ti, tj, tk);
-        var crossing = from + ((to - from) * t);
-
-        Offer(here, from, crossing);
-        Offer(there, to, crossing);
-    }
-
-    /// <summary>
-    /// Keeps <paramref name="candidate"/> for a node if it is nearer than what it already has. The
-    /// node's position is passed in by callers that already know its coordinates: recovering them
-    /// from the flat index costs three integer divisions, on every offer of every sweep.
-    /// </summary>
-    private void Offer(int index, Vec3 position, Vec3 candidate)
-    {
-        if (!_known[index])
-        {
-            _closest[index] = candidate;
-            _known[index] = true;
-            return;
-        }
-
-        if ((candidate - position).LengthSquared < (_closest[index] - position).LengthSquared)
-        {
-            _closest[index] = candidate;
-        }
-    }
-
-    /// <summary>
-    /// One raster sweep, propagating each node's closest surface point to the three neighbours
-    /// ahead of it. Forward covers increasing indices, backward decreasing, so between them every
-    /// axis-monotone path is walked.
-    /// </summary>
-    private void Sweep(bool forward)
-    {
-        var step = forward ? 1 : -1;
-        var kStart = forward ? 0 : _nz - 1;
-        var jStart = forward ? 0 : _ny - 1;
-        var iStart = forward ? 0 : _nx - 1;
-
-        for (var k = kStart; k >= 0 && k < _nz; k += step)
-        {
-            for (var j = jStart; j >= 0 && j < _ny; j += step)
-            {
-                for (var i = iStart; i >= 0 && i < _nx; i += step)
-                {
-                    var index = IndexOf(i, j, k);
-                    if (!_known[index])
+                    if (negative == 0 || negative == 8)
                     {
                         continue;
                     }
 
-                    var closest = _closest[index];
+                    for (var c = 0; c < 8; c++)
+                    {
+                        int ci = i + (c & 1), cj = j + ((c >> 1) & 1), ck = k + ((c >> 2) & 1);
+                        corner[c] = PositionOf(ci, cj, ck);
+                        gradient[c] = Gradient(ci, cj, ck);
+                    }
 
-                    var ni = i + step;
-                    if (ni >= 0 && ni < _nx) { Offer(IndexOf(ni, j, k), PositionOf(ni, j, k), closest); }
-
-                    var nj = j + step;
-                    if (nj >= 0 && nj < _ny) { Offer(IndexOf(i, nj, k), PositionOf(i, nj, k), closest); }
-
-                    var nk = k + step;
-                    if (nk >= 0 && nk < _nz) { Offer(IndexOf(i, j, nk), PositionOf(i, j, nk), closest); }
+                    // The six orders of stepping x, y and z from corner 0 to corner 7.
+                    foreach (var (a, b) in DiagonalPaths)
+                    {
+                        March(soup, corner, gradient, value, 0, a, a | b, 7);
+                    }
                 }
             }
+
+            slabs[k] = soup;
+        });
+
+        var count = slabs.Sum(slab => slab.Count);
+        var vertices = ImmutableArray.CreateBuilder<Vec3>(count);
+        var normals = new Vec3[count];
+        foreach (var slab in slabs)
+        {
+            foreach (var (point, normal) in slab)
+            {
+                normals[vertices.Count] = normal;
+                vertices.Add(point);
+            }
         }
+
+        var triangles = ImmutableArray.CreateBuilder<int>(count);
+        for (var n = 0; n < count; n++)
+        {
+            triangles.Add(n);
+        }
+
+        return (vertices.MoveToImmutable(), normals, triangles.MoveToImmutable());
+    }
+
+    /// <summary>The field's gradient at a node: central differences, one-sided at the box.</summary>
+    private Vec3 Gradient(int i, int j, int k)
+    {
+        double Along(int ia, int ja, int ka, int ib, int jb, int kb, double span) =>
+            (_values[IndexOf(ib, jb, kb)] - _values[IndexOf(ia, ja, ka)]) / span;
+
+        var gx = Along(Math.Max(i - 1, 0), j, k, Math.Min(i + 1, _nx - 1), j, k, (Math.Min(i + 1, _nx - 1) - Math.Max(i - 1, 0)) * _cell);
+        var gy = Along(i, Math.Max(j - 1, 0), k, i, Math.Min(j + 1, _ny - 1), k, (Math.Min(j + 1, _ny - 1) - Math.Max(j - 1, 0)) * _cell);
+        var gz = Along(i, j, Math.Max(k - 1, 0), i, j, Math.Min(k + 1, _nz - 1), (Math.Min(k + 1, _nz - 1) - Math.Max(k - 1, 0)) * _cell);
+        return new Vec3(gx, gy, gz);
+    }
+
+    /// <summary>The first two axis steps of each path from corner 0 to corner 7, as corner bits.</summary>
+    private static readonly (int, int)[] DiagonalPaths = [(1, 2), (1, 4), (2, 1), (2, 4), (4, 1), (4, 2)];
+
+    /// <summary>Appends the piece of the zero level inside one tetrahedron of a cell.</summary>
+    private static void March(
+        List<(Vec3, Vec3)> soup, Span<Vec3> corner, Span<Vec3> gradient, Span<double> value, int p, int q, int r, int s)
+    {
+        Span<int> inside = stackalloc int[4];
+        Span<int> outside = stackalloc int[4];
+        var ni = 0;
+        var no = 0;
+        foreach (var c in (ReadOnlySpan<int>)[p, q, r, s])
+        {
+            if (value[c] < 0) { inside[ni++] = c; } else { outside[no++] = c; }
+        }
+
+        if (ni == 0 || no == 0)
+        {
+            return;
+        }
+
+        if (ni == 2)
+        {
+            var a = Crossing(corner, gradient, value, inside[0], outside[0]);
+            var b = Crossing(corner, gradient, value, inside[0], outside[1]);
+            var c = Crossing(corner, gradient, value, inside[1], outside[1]);
+            var d = Crossing(corner, gradient, value, inside[1], outside[0]);
+            soup.Add(a); soup.Add(b); soup.Add(c);
+            soup.Add(a); soup.Add(c); soup.Add(d);
+            return;
+        }
+
+        // One corner alone on its side: the level cuts the three edges that leave it.
+        var lone = ni == 1 ? inside[0] : outside[0];
+        var others = ni == 1 ? outside[..3] : inside[..3];
+        soup.Add(Crossing(corner, gradient, value, lone, others[0]));
+        soup.Add(Crossing(corner, gradient, value, lone, others[1]));
+        soup.Add(Crossing(corner, gradient, value, lone, others[2]));
+    }
+
+    /// <summary>Where the level crosses an edge, and the unit normal there.</summary>
+    private static (Vec3, Vec3) Crossing(Span<Vec3> corner, Span<Vec3> gradient, Span<double> value, int from, int to)
+    {
+        var t = value[from] / (value[from] - value[to]);
+        var normal = gradient[from] + ((gradient[to] - gradient[from]) * t);
+        var length = normal.Length;
+        return (corner[from] + ((corner[to] - corner[from]) * t), length > 0 ? normal * (1 / length) : Vec3.Zero);
     }
 }
