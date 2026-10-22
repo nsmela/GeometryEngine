@@ -480,18 +480,30 @@ public interface IGeometryModifiers
     /// -3.5 % over one, two and three rounds as the loss compounds, where this holds at +3.9 %,
     /// +3.7 %, +3.6 % - and the sign is the honest one for a closing, which fills rather than
     /// erodes. On a sphere, which has nothing to fill, the whole error is 0.5 % at one round and
-    /// 0.3 % at three.
+    /// 0.3 % at three. That error is one-sided: the result sits about a tenth of a cell outside
+    /// where it should (0.07-0.11 mm in radius at 1 mm cells, on spheres of radius 10 and 30),
+    /// because reinitialising measures to the grid-edge crossings rather than to the surface
+    /// between them, which overestimates distances slightly, so the deflation stops short.
     ///
     /// Time follows from the same thing: the added rounds are grid sweeps, so the cost is roughly
-    /// flat in <paramref name="iterations"/> where <see cref="DoubleOffset"/> grows linearly. It
-    /// is not uniformly faster, though - at a single iteration it is somewhat slower, because it
-    /// meshes on a finer default grid (64 cells across the longest side against 32) and so also
-    /// returns several times as many triangles. Pass <paramref name="cellSize"/> if that matters.
+    /// flat in <paramref name="iterations"/> where <see cref="DoubleOffset"/> grows linearly. The
+    /// field is sampled exactly only near the surface, so one iteration is also faster on a
+    /// typical bolus: 0.3-0.8 s at 1 mm cells against 1.4-2.2 s for DoubleOffset and an
+    /// inflation offset, on four 30-120 mm scans (bench <c>smooth</c>). It meshes at the cell asked
+    /// for, where an offset coarsens its grid to a budget, so on a model much past 150 mm it
+    /// returns several times as many triangles and can take longer. Pass a larger
+    /// <paramref name="cellSize"/> if that matters.
     /// </summary>
     /// <param name="distance">How far to inflate and then deflate. Must be at least one grid cell.</param>
     /// <param name="iterations">Inflate/deflate rounds. Zero returns the mesh unchanged.</param>
     /// <param name="cellSize">Grid spacing; zero picks one from the mesh's size.</param>
-    Result<IMesh> OffsetSmooth(IMesh mesh, double distance, int iterations = 1, double cellSize = 0);
+    /// <param name="inflation">
+    /// Moves the closed surface out by this much - in, when negative - before it is meshed. After
+    /// the closing the grid holds a true distance field, so this is an exact offset of the result
+    /// that costs no second meshing, unlike calling <see cref="Offset"/> on it. Ignored when no
+    /// closing runs.
+    /// </param>
+    Result<IMesh> OffsetSmooth(IMesh mesh, double distance, int iterations = 1, double cellSize = 0, double inflation = 0);
 
     /// <summary>
     /// Subdivides the surface into a smooth interpolation of itself, treating the mesh as a

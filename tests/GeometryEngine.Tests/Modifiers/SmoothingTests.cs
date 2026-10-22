@@ -1,5 +1,7 @@
 using System.Collections.Immutable;
 using GeometryEngine.Internal.Smoothing;
+using GeometryEngine.Internal.Spatial;
+using GeometryEngine.Modifiers;
 
 namespace GeometryEngine.Tests.Modifiers;
 
@@ -199,6 +201,98 @@ public sealed class OffsetSmoothTests
         var viaRemesh = Fixtures.Engine.Modifiers.DoubleOffset(slotted, distance: 3, iterations: 1).Value;
 
         Check.RelativelyClose(Fixtures.VolumeOf(viaRemesh), Fixtures.VolumeOf(viaGrid), 0.1);
+    }
+
+    [Fact]
+    public void Sampling_only_near_the_surface_closes_to_the_same_grid_as_sampling_everywhere()
+    {
+        // The band sampler's whole claim: every node it leaves unsampled is far enough out that
+        // only its sign reaches the closing, and the sign it fills in is the right one. So the
+        // grids have to agree bit for bit once closed - not approximately.
+        foreach (var (mesh, distance, cell) in new[]
+        {
+            (Slotted(), 3.0, 0.75),
+            (Fixtures.Sphere(Vec3.Zero, 10, 32), 2.0, 1.0),
+            (Fixtures.Engine.Booleans.Union(
+                Fixtures.Sphere(Vec3.Zero, 6, 24), Fixtures.Sphere(new Vec3(8, 0, 0), 5, 24)).Value, 1.5, 0.5),
+        })
+        {
+            var plan = OffsetSmoothHandler.Plan(mesh, distance, cell).Value;
+
+            var everywhere = SignedDistanceGrid.Sample(new MeshBvh(mesh).SignedDistance, plan.Min, plan.Max, plan.Cell);
+            var nearOnly = OffsetSmoothHandler.SampleField(mesh, plan, distance);
+
+            OffsetSmoothHandler.Close(everywhere, distance, iterations: 2);
+            OffsetSmoothHandler.Close(nearOnly, distance, iterations: 2);
+
+            Check.True(everywhere.Values.SequenceEqual(nearOnly.Values));
+        }
+    }
+
+    [Fact]
+    public void A_scan_with_a_face_doubled_backwards_still_closes_to_the_full_grid()
+    {
+        // larynx small carries one face repeated with its winding reversed. The field's sign is
+        // wrong beside it, so a few band nodes there disagree with the rest. When each unsampled
+        // node took the sign of the band node nearest it, those few claimed everything closer to
+        // them than to the rest of the band, and the smoothed bolus grew a 14 mm blob. Each region
+        // takes the sign most of its band agrees on, and on this scan that is again exactly what
+        // sampling every node gives.
+        var scan = Assets.LoadBench("larynx small.stl");
+        var plan = OffsetSmoothHandler.Plan(scan, 1, 1).Value;
+
+        var everywhere = SignedDistanceGrid.Sample(new MeshBvh(scan).SignedDistance, plan.Min, plan.Max, plan.Cell);
+        var nearOnly = OffsetSmoothHandler.SampleField(scan, plan, 1);
+
+        OffsetSmoothHandler.Close(everywhere, 1, iterations: 1);
+        OffsetSmoothHandler.Close(nearOnly, 1, iterations: 1);
+
+        Check.True(everywhere.Values.SequenceEqual(nearOnly.Values));
+    }
+
+    [Fact]
+    public void A_band_that_does_not_reach_past_the_shifted_level_is_refused()
+    {
+        var sphere = Fixtures.Sphere(Vec3.Zero, 10, 16);
+        var bvh = new MeshBvh(sphere);
+
+        var refused = false;
+        try
+        {
+            SignedDistanceGrid.SampleBand(bvh.TrySignedDistance, new Vec3(-15, -15, -15), new Vec3(15, 15, 15), 1, level: 2, band: 3);
+        }
+        catch (ArgumentOutOfRangeException)
+        {
+            refused = true;
+        }
+
+        Check.True(refused);
+    }
+
+    [Fact]
+    public void Inflation_offsets_the_closed_surface_without_re_meshing_it()
+    {
+        // A sphere has nothing to fill, so closing it and inflating by 1 should give back about a
+        // radius-11 sphere: the shift on the closed field is an exact offset of the result.
+        var sphere = Fixtures.Sphere(Vec3.Zero, 10, 48);
+
+        var inflated = Fixtures.Engine.Modifiers.OffsetSmooth(sphere, distance: 2, iterations: 1, cellSize: 0.5, inflation: 1).Value;
+
+        var radius = Math.Cbrt(3 * Fixtures.VolumeOf(inflated) / (4 * Math.PI));
+        Check.Close(11, radius, 0.1);
+        Check.True(Fixtures.TopologyOf(inflated).IsWatertight);
+    }
+
+    [Fact]
+    public void No_inflation_leaves_the_closing_as_it_was()
+    {
+        var slotted = Slotted();
+
+        var plain = Fixtures.Engine.Modifiers.OffsetSmooth(slotted, distance: 3, iterations: 1).Value;
+        var zero = Fixtures.Engine.Modifiers.OffsetSmooth(slotted, distance: 3, iterations: 1, inflation: 0).Value;
+
+        Check.True(plain.Vertices.SequenceEqual(zero.Vertices));
+        Check.True(plain.Triangles.SequenceEqual(zero.Triangles));
     }
 
     [Fact]

@@ -419,7 +419,7 @@ internal sealed class LaplacianSmoothHandler
 }
 
 /// <summary>Ask for a mesh inflated and deflated, rounding away concave detail.</summary>
-public sealed record OffsetSmoothRequest(IMesh Mesh, double Distance, int Iterations, double CellSize);
+public sealed record OffsetSmoothRequest(IMesh Mesh, double Distance, int Iterations, double CellSize, double Inflation = 0);
 
 /// <summary>
 /// Morphological closing, iterated entirely on a sampled distance field: the mesh is consulted
@@ -448,6 +448,13 @@ internal sealed class OffsetSmoothHandler
     /// <summary>Padding beyond the inflation distance, so the grown surface is never clipped by the box.</summary>
     private const double BoxMarginCells = 3;
 
+    /// <summary>
+    /// How far past the inflation the field is sampled exactly, in cells. One is the least the
+    /// closing needs (see <see cref="SignedDistanceGrid.SampleBand"/>); the second keeps a value
+    /// that lands on the boundary from deciding anything.
+    /// </summary>
+    private const double BandMarginCells = 2;
+
     public Result<IMesh> Handle(OffsetSmoothRequest request)
     {
         ArgumentNullException.ThrowIfNull(request.Mesh);
@@ -462,7 +469,7 @@ internal sealed class OffsetSmoothHandler
             return ModifierErrors.NegativeIterations;
         }
 
-        if (!double.IsFinite(request.Distance) || !double.IsFinite(request.CellSize))
+        if (!double.IsFinite(request.Distance) || !double.IsFinite(request.CellSize) || !double.IsFinite(request.Inflation))
         {
             return ModifierErrors.NonFiniteParameter;
         }
@@ -480,6 +487,34 @@ internal sealed class OffsetSmoothHandler
         }
 
         var distance = Math.Abs(request.Distance);
+        var plan = Plan(mesh, distance, request.CellSize, request.Inflation);
+        if (plan.IsFailure)
+        {
+            return plan.Error;
+        }
+
+        var grid = SampleField(mesh, plan.Value, distance);
+        Close(grid, distance, request.Iterations);
+
+        // The closing leaves a true distance field behind it, so an offset of the result is a
+        // shift - exact, and without the second meshing an Offset call on the mesh would cost.
+        if (request.Inflation != 0)
+        {
+            grid.Shift(request.Inflation);
+        }
+
+        return Mesh(grid, plan.Value, metadata);
+    }
+
+    /// <summary>
+    /// The box and cell the closing runs on: the mesh's bounds padded by the inflation and a
+    /// margin, at the requested cell, coarsened only as far as the node budget demands.
+    /// </summary>
+    /// <param name="distance">The closing's inflate/deflate distance.</param>
+    /// <param name="inflation">The final offset, which only needs room when it grows the solid.</param>
+    internal static Result<GridPlan> Plan(IMesh mesh, double distance, double cellSize, double inflation = 0)
+    {
+        var reach = distance + Math.Max(inflation, 0);
 
         var min = mesh.Vertices[0];
         var max = mesh.Vertices[0];
@@ -491,20 +526,20 @@ internal sealed class OffsetSmoothHandler
 
         var size = max - min;
         var longest = Math.Max(size.X, Math.Max(size.Y, size.Z));
-        var cell = request.CellSize > 0 ? request.CellSize : longest / DefaultResolution;
+        var cell = cellSize > 0 ? cellSize : longest / DefaultResolution;
         if (!(cell > 0))
         {
             return MeshErrors.EmptyOperand;
         }
 
-        var padded = size + (new Vec3(1, 1, 1) * (2 * (distance + (BoxMarginCells * cell))));
+        var padded = size + (new Vec3(1, 1, 1) * (2 * (reach + (BoxMarginCells * cell))));
         var nodes = padded.X * padded.Y * padded.Z / Math.Pow(cell, 3);
         if (nodes > CellBudget)
         {
             cell *= Math.Cbrt(nodes / CellBudget);
         }
 
-        var padding = new Vec3(1, 1, 1) * (distance + (BoxMarginCells * cell));
+        var padding = new Vec3(1, 1, 1) * (reach + (BoxMarginCells * cell));
         min -= padding;
         max += padding;
 
@@ -516,10 +551,25 @@ internal sealed class OffsetSmoothHandler
             return ModifierErrors.DistanceBelowCell;
         }
 
-        var bvh = new MeshBvh(mesh);
-        var grid = SignedDistanceGrid.Sample(bvh.SignedDistance, min, max, cell);
+        return new GridPlan(min, max, cell);
+    }
 
-        for (var i = 0; i < request.Iterations; i++)
+    /// <summary>
+    /// The mesh's signed distance on the plan's grid, ready for <see cref="Close"/> and nothing
+    /// else: exact within a band just wider than the inflation, sign only beyond it - which
+    /// closes to the same grid as sampling every node, for a fraction of the queries.
+    /// </summary>
+    internal static SignedDistanceGrid SampleField(IMesh mesh, GridPlan plan, double distance)
+    {
+        var bvh = new MeshBvh(mesh);
+        return SignedDistanceGrid.SampleBand(
+            bvh.TrySignedDistance, plan.Min, plan.Max, plan.Cell, distance, distance + (BandMarginCells * plan.Cell));
+    }
+
+    /// <summary>The closing itself, entirely on the grid.</summary>
+    internal static void Close(SignedDistanceGrid grid, double distance, int iterations)
+    {
+        for (var i = 0; i < iterations; i++)
         {
             // Inflate, then recover a true field from the grown surface - see Reinitialise for
             // why the recovery is not optional. Then deflate and recover again.
@@ -528,12 +578,18 @@ internal sealed class OffsetSmoothHandler
             grid.Shift(-distance);
             grid.Reinitialise();
         }
+    }
 
-        var result = ManifoldKernel.LevelSet(grid.Sample, min, max, cell, 0, metadata);
+    /// <summary>The closed field's zero level as a mesh - the one resampling the operation makes.</summary>
+    internal static Result<IMesh> Mesh(SignedDistanceGrid grid, GridPlan plan, MeshMetadata metadata)
+    {
+        var result = ManifoldKernel.LevelSet(grid.Sample, plan.Min, plan.Max, plan.Cell, 0, metadata);
         return result.IsFailure && result.Error == ManifoldErrors.EmptyResult
             ? ModifierErrors.OffsetFailed
             : result;
     }
+
+    internal readonly record struct GridPlan(Vec3 Min, Vec3 Max, double Cell);
 }
 
 /// <summary>Ask for a mesh's creases rounded and its flat surface left alone.</summary>
@@ -685,8 +741,8 @@ internal sealed class GeometryModifiers : IGeometryModifiers
     public Result<IMesh> LaplacianSmooth(IMesh mesh, int iterations = 5, double strength = 0.5) =>
         _laplacian.Handle(new LaplacianSmoothRequest(mesh, iterations, strength));
 
-    public Result<IMesh> OffsetSmooth(IMesh mesh, double distance, int iterations = 1, double cellSize = 0) =>
-        _offsetSmooth.Handle(new OffsetSmoothRequest(mesh, distance, iterations, cellSize));
+    public Result<IMesh> OffsetSmooth(IMesh mesh, double distance, int iterations = 1, double cellSize = 0, double inflation = 0) =>
+        _offsetSmooth.Handle(new OffsetSmoothRequest(mesh, distance, iterations, cellSize, inflation));
 
     public Result<IMesh> SmoothEdges(IMesh mesh, double keepSharperThan = 30, double tolerance = 0) =>
         _smoothEdges.Handle(new SmoothEdgesRequest(mesh, keepSharperThan, tolerance));

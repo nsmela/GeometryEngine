@@ -72,6 +72,134 @@ internal sealed class SignedDistanceGrid
         return new SignedDistanceGrid(min, cell, nx, ny, nz, values);
     }
 
+    /// <summary>A field that answers only near the surface: false for a point at least <c>within</c> away.</summary>
+    public delegate bool BandField(Vec3 point, double within, out double value);
+
+    /// <summary>
+    /// <see cref="Sample"/> for a grid whose first use is <c>Shift(level)</c> and then
+    /// <see cref="Reinitialise"/>, which is all a closing does with it - and which reads only two
+    /// things: exact values on the grid edges the shifted level crosses, and the sign of every
+    /// node. So the field is sampled exactly only within <paramref name="band"/> of the surface,
+    /// where the bounded query is cheap to refuse everywhere else, and every node outside the band
+    /// takes its sign from the band by flood fill, at a magnitude of the band itself.
+    ///
+    /// For a band wider than <paramref name="level"/> plus a cell, the result reinitialises to
+    /// exactly the grid <see cref="Sample"/> would have given. A node outside the band is at least
+    /// the band from the surface, so it sits on the same side of the shifted level as its stand-in
+    /// value; its neighbours are within a cell of it, so no edge touching it can cross that level;
+    /// and every edge that does cross lies between two exactly sampled nodes. The flood fill is
+    /// right for the same reason: an out-of-band region cannot change sign without passing through
+    /// the band. That holds for any field whose sign only changes at the surface - a mesh whose
+    /// inside and outside are consistent. On one that is not, each filled region takes the sign
+    /// most of the band around it agrees on, where full sampling would have kept whatever stray
+    /// sign changes the defect causes out there.
+    /// </summary>
+    public static SignedDistanceGrid SampleBand(BandField field, Vec3 min, Vec3 max, double cell, double level, double band)
+    {
+        if (!(band > level + cell))
+        {
+            throw new ArgumentOutOfRangeException(nameof(band), band, "The band has to reach past the shifted level by more than a cell.");
+        }
+
+        var nx = Math.Max(2, (int)Math.Ceiling((max.X - min.X) / cell) + 1);
+        var ny = Math.Max(2, (int)Math.Ceiling((max.Y - min.Y) / cell) + 1);
+        var nz = Math.Max(2, (int)Math.Ceiling((max.Z - min.Z) / cell) + 1);
+
+        var values = new double[nx * ny * nz];
+
+        Parallel.For(0, nz, k =>
+        {
+            for (var j = 0; j < ny; j++)
+            {
+                var row = ((k * ny) + j) * nx;
+                for (var i = 0; i < nx; i++)
+                {
+                    var point = new Vec3(min.X + (i * cell), min.Y + (j * cell), min.Z + (k * cell));
+                    values[row + i] = field(point, band, out var value) ? value : double.NaN;
+                }
+            }
+        });
+
+        FillOutsideBand(values, nx, ny, nz, band);
+        return new SignedDistanceGrid(min, cell, nx, ny, nz, values);
+    }
+
+    /// <summary>
+    /// Gives every node the band left unsampled the sign of the band around it, at the band's
+    /// magnitude. Each connected region of unsampled nodes is filled as one, with the sign most of
+    /// the band nodes touching it agree on. On a consistent mesh they all agree. On one with a
+    /// defect - a doubled face wound the wrong way flips the sign of the field near it - a few
+    /// band nodes beside the defect disagree. Letting each unsampled node take the sign of the
+    /// band node nearest it would hand those few everything closer to them than to the rest of
+    /// the band: measured on such a bolus, a 14 mm blob.
+    /// Regions are visited in index order and filled breadth first, so the result depends on
+    /// nothing but the values.
+    /// </summary>
+    private static void FillOutsideBand(double[] values, int nx, int ny, int nz, double band)
+    {
+        var region = new int[values.Length];
+        var queue = new int[values.Length];
+        var plane = nx * ny;
+        var tail = 0;
+        var label = 0;
+
+        for (var start = 0; start < values.Length; start++)
+        {
+            if (!double.IsNaN(values[start]) || region[start] != 0)
+            {
+                continue;
+            }
+
+            label++;
+            var first = tail;
+            var head = tail;
+            region[start] = label;
+            queue[tail++] = start;
+            long inside = 0;
+            long outside = 0;
+
+            while (head < tail)
+            {
+                var index = queue[head++];
+                var i = index % nx;
+                var j = index / nx % ny;
+                var k = index / plane;
+
+                if (i > 0) { Reach(index - 1); }
+                if (i + 1 < nx) { Reach(index + 1); }
+                if (j > 0) { Reach(index - nx); }
+                if (j + 1 < ny) { Reach(index + nx); }
+                if (k > 0) { Reach(index - plane); }
+                if (k + 1 < nz) { Reach(index + plane); }
+            }
+
+            // No band anywhere around it means no surface near the grid: outside, and the level
+            // set comes back empty, as it would have from full sampling.
+            var fill = inside > outside ? -band : band;
+            for (var n = first; n < tail; n++)
+            {
+                values[queue[n]] = fill;
+            }
+
+            void Reach(int neighbour)
+            {
+                var value = values[neighbour];
+                if (!double.IsNaN(value))
+                {
+                    if (value < 0) { inside++; } else { outside++; }
+                }
+                else if (region[neighbour] == 0)
+                {
+                    region[neighbour] = label;
+                    queue[tail++] = neighbour;
+                }
+            }
+        }
+    }
+
+    /// <summary>The node values in index order (x fastest, then y, then z), for comparing two grids.</summary>
+    internal ReadOnlySpan<double> Values => _values;
+
     /// <summary>
     /// Moves the zero level by <paramref name="distance"/>: positive grows the solid, negative
     /// shrinks it. Exact for a true signed distance field, which is why an offset is a shift here

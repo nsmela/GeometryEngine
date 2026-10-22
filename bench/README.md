@@ -70,6 +70,21 @@ full collection. The engine is immutable and stateless, so the retained figure s
 be flat across the two runs; growth proportional to the iteration count would indicate
 a leak.
 
+### Compare smoothing routes
+
+```
+dotnet run -c Release -- smooth [iterations] [runs] [mesh,mesh,...|default] [intensity]
+dotnet run -c Release -- smooth plan [folder|default] [intensity]
+```
+
+Times Fabolus's smoothing both ways on the same meshes and settings: `DoubleOffset` plus the
+inflation offset, which re-meshes 2N + 1 times, against `OffsetSmooth` with the inflation
+applied on the grid, which meshes once. Each is followed by Fabolus's decimation. Prints the
+median time per phase, the volume change, the deviation from the input, whether the result is
+closed and repeatable, and whether the band-limited field sampling closes to exactly the grid
+full sampling would have. `plan` lists the grid each mesh would close on, and which meshes the
+grid refuses at that intensity.
+
 ## Test meshes
 
 `bench/files` holds the Fabolus v1 `tests/files` STL set (both ASCII and binary). They

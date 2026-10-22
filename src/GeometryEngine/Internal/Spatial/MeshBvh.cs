@@ -240,7 +240,14 @@ internal sealed class MeshBvh
     public bool ClosestPoint(Vec3 point, out Vec3 closest, out int triangle, out double distance) =>
         ClosestPoint(point, out closest, out triangle, out distance, out _);
 
-    private bool ClosestPoint(Vec3 point, out Vec3 closest, out int triangle, out double distance, out TriangleFeature feature)
+    /// <param name="bestSquared">
+    /// The squared distance a hit has to beat. <see cref="double.MaxValue"/> finds the nearest
+    /// triangle anywhere; anything smaller bounds the search, and since the bound only prunes
+    /// boxes and triangles that could not have won, a hit inside it is exactly the unbounded one.
+    /// </param>
+    private bool ClosestPoint(
+        Vec3 point, out Vec3 closest, out int triangle, out double distance, out TriangleFeature feature,
+        double bestSquared = double.MaxValue)
     {
         closest = point;
         triangle = -1;
@@ -251,7 +258,6 @@ internal sealed class MeshBvh
             return false;
         }
 
-        var bestSquared = double.MaxValue;
         var stack = RentStack(StackDepth);
         var top = 0;
         stack[top++] = 0;
@@ -305,8 +311,13 @@ internal sealed class MeshBvh
             }
         }
 
+        if (triangle < 0)
+        {
+            return false;
+        }
+
         distance = Math.Sqrt(bestSquared);
-        return triangle >= 0;
+        return true;
     }
 
     /// <summary>
@@ -327,6 +338,28 @@ internal sealed class MeshBvh
             return double.MaxValue;
         }
 
+        return Signed(point, closest, triangle, distance, feature);
+    }
+
+    /// <summary>
+    /// <see cref="SignedDistance"/> for a point nearer the surface than <paramref name="within"/>,
+    /// and false for one that is not. A point the bound turns away costs a few box tests rather
+    /// than a full descent, and a point it keeps gets exactly the value the unbounded query gives.
+    /// </summary>
+    public bool TrySignedDistance(Vec3 point, double within, out double signedDistance)
+    {
+        if (!ClosestPoint(point, out var closest, out var triangle, out var distance, out var feature, within * within))
+        {
+            signedDistance = 0;
+            return false;
+        }
+
+        signedDistance = Signed(point, closest, triangle, distance, feature);
+        return true;
+    }
+
+    private double Signed(Vec3 point, Vec3 closest, int triangle, double distance, TriangleFeature feature)
+    {
         var normal = PseudoNormal(triangle, feature);
         if (normal == Vec3.Zero)
         {
