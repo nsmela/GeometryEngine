@@ -1,3 +1,7 @@
 # STL meshes are data: never apply end-of-line conversion (it would corrupt the
 # binary files) and do not try to diff them.
 *.stl binary
+
+# Patches are applied to other projects' sources, which use LF; a CRLF checkout would make
+# `git apply` reject them.
+*.patch text eol=lf
