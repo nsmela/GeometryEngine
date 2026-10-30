@@ -101,7 +101,7 @@ source of the covered files. The source is the upstream repositories at the tags
 
 **Consumed as a NuGet package; redistributed as `Clipper2Lib.dll` in consumers' output.**
 
-- **Project:** Clipper2 — https://github.com/AngusJohnson/Clipper2 (package `Clipper2` 1.5.4)
+- **Project:** Clipper2 — https://github.com/AngusJohnson/Clipper2 (package `Clipper2` 2.0.0)
 - **Licence:** Boost Software License 1.0
 - **Used for:** planar polygon offsets, path buffering and unions
 
