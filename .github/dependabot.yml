@@ -1,0 +1,35 @@
+version: 2
+
+updates:
+  # NuGet packages. Grouped so a month's updates arrive as one pull request rather than one per
+  # package. There is no solution file, so each project folder is listed; the BasicResults
+  # version is a property in Directory.Build.props and is raised there.
+  #
+  # Fabolus.Core references Clipper2 and BasicResults itself and keeps them at the versions
+  # here, so raising either means Fabolus raises its own reference when it next moves its
+  # GeometryEngine pin. Fabolus's dependabot ignores Clipper2 for that reason.
+  #
+  # No github-actions entry: this repository has no workflows yet. Add one, modelled on
+  # Fabolus's, when it does.
+  - package-ecosystem: nuget
+    directories:
+      - /src/*
+      - /tests/*
+      - /bench/*
+      - /samples/*
+    target-branch: main
+    schedule:
+      interval: monthly
+    groups:
+      # Benchmark-only packages never ship, so they come in a low-risk pull request of their own.
+      # The test projects are a custom runner with no package references.
+      bench-dependencies:
+        patterns:
+          - "BenchmarkDotNet*"
+      # The bench packages are excluded here too, or this group takes them as well and its pull
+      # request supersedes the bench-only one (as Fabolus #78 did #77).
+      app-dependencies:
+        patterns:
+          - "*"
+        exclude-patterns:
+          - "BenchmarkDotNet*"
