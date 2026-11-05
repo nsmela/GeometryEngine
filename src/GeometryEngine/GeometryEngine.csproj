@@ -60,8 +60,9 @@
     Planar polygon work only: Clipper2 offsets and unions outlines, NetTopologySuite computes
     concave hulls. Both are what Fabolus used for the same operations before they moved here, so
     outlines keep the shape they had. Fabolus.Core declares Clipper2 itself and keeps it at the
-    version here, raising it when it moves its GeometryEngine pin, so a consumer referencing both
-    never has to resolve a downgrade.
+    version here. Whichever side raises it first, the other follows: a lower version in Fabolus
+    is a downgrade restore rejects (NU1605), and a higher one runs this code on a Clipper2 these
+    tests have not seen.
   -->
   <ItemGroup>
     <PackageReference Include="Clipper2" Version="2.0.0" />
