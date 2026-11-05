@@ -6,8 +6,10 @@ updates:
   # version is a property in Directory.Build.props and is raised there.
   #
   # Fabolus.Core references Clipper2 and BasicResults itself and keeps them at the versions
-  # here, so raising either means Fabolus raises its own reference when it next moves its
-  # GeometryEngine pin. Fabolus's dependabot ignores Clipper2 for that reason.
+  # here. Fabolus's dependabot watches both too, so either repository may raise one first: when
+  # this one does, Fabolus raises its own reference as it moves its GeometryEngine pin; when
+  # Fabolus does, raise it here to match, or the app runs this code on a version it was not
+  # tested against.
   #
   # No github-actions entry: this repository has no workflows yet. Add one, modelled on
   # Fabolus's, when it does.
